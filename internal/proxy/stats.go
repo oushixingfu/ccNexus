@@ -65,9 +65,9 @@ type DailyRecord struct {
 
 // Stats represents overall proxy statistics
 type Stats struct {
-	storage       StatsStorage
-	deviceID      string
-	mu            sync.RWMutex
+	storage  StatsStorage
+	deviceID string
+	mu       sync.RWMutex
 
 	// Save optimization
 	savePending   bool
@@ -373,7 +373,6 @@ func (s *Stats) Load() error {
 	return nil
 }
 
-
 // GetPeriodStats returns aggregated statistics for a time period
 func (s *Stats) GetPeriodStats(startDate, endDate string) map[string]*DailyStats {
 	// Use single aggregated query instead of N+1 queries
@@ -547,7 +546,7 @@ func getPeriodDates() (today, yesterday, weekStart, monthStart string) {
 	if weekday == 0 {
 		weekday = 7 // Adjust Sunday to 7
 	}
-	weekStart = now.AddDate(0, 0, -(weekday-1)).Format("2006-01-02")
+	weekStart = now.AddDate(0, 0, -(weekday - 1)).Format("2006-01-02")
 
 	// First day of current month
 	monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Format("2006-01-02")

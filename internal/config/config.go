@@ -15,6 +15,12 @@ const (
 	AuthModeTokenPool      = "token_pool"
 	AuthModeCodexTokenPool = "codex_token_pool"
 
+	ThinkingOff    = "off"
+	ThinkingLow    = "low"
+	ThinkingMedium = "medium"
+	ThinkingHigh   = "high"
+	ThinkingXHigh  = "xhigh"
+
 	CodexTokenPoolAPIURL      = "https://chatgpt.com/backend-api/codex"
 	CodexTokenPoolTransformer = "openai2"
 )
@@ -35,12 +41,28 @@ func IsTokenPoolAuthMode(mode string) bool {
 	return normalized == AuthModeTokenPool || normalized == AuthModeCodexTokenPool
 }
 
+func NormalizeThinkingEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case ThinkingLow:
+		return ThinkingLow
+	case ThinkingMedium:
+		return ThinkingMedium
+	case ThinkingHigh:
+		return ThinkingHigh
+	case ThinkingXHigh:
+		return ThinkingXHigh
+	default:
+		return ThinkingOff
+	}
+}
+
 func ApplyEndpointAuthModeRules(ep *Endpoint) {
 	if ep == nil {
 		return
 	}
 
 	ep.AuthMode = NormalizeAuthMode(ep.AuthMode)
+	ep.Thinking = NormalizeThinkingEffort(ep.Thinking)
 	ep.APIUrl = strings.TrimSuffix(strings.TrimSpace(ep.APIUrl), "/")
 	ep.Transformer = strings.TrimSpace(ep.Transformer)
 
@@ -100,6 +122,7 @@ type Endpoint struct {
 	Enabled     bool   `json:"enabled"`
 	Transformer string `json:"transformer,omitempty"` // Transformer type: claude, openai, gemini, deepseek
 	Model       string `json:"model,omitempty"`       // Target model name for non-Claude APIs
+	Thinking    string `json:"thinking,omitempty"`    // Reasoning effort: off, low, medium, high, xhigh
 	Remark      string `json:"remark,omitempty"`      // Optional remark for the endpoint
 }
 
@@ -584,6 +607,7 @@ type StorageEndpoint struct {
 	Enabled     bool
 	Transformer string
 	Model       string
+	Thinking    string
 	Remark      string
 	SortOrder   int
 }
@@ -608,6 +632,7 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 			Enabled:     ep.Enabled,
 			Transformer: ep.Transformer,
 			Model:       ep.Model,
+			Thinking:    ep.Thinking,
 			Remark:      ep.Remark,
 		}
 		if endpoint.Transformer == "" {
@@ -861,6 +886,7 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 			Enabled:     ep.Enabled,
 			Transformer: ep.Transformer,
 			Model:       ep.Model,
+			Thinking:    ep.Thinking,
 			Remark:      ep.Remark,
 		}
 		if normalizedEndpoint.Transformer == "" {
@@ -873,6 +899,7 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 		endpoint.Enabled = normalizedEndpoint.Enabled
 		endpoint.Transformer = normalizedEndpoint.Transformer
 		endpoint.Model = normalizedEndpoint.Model
+		endpoint.Thinking = normalizedEndpoint.Thinking
 		endpoint.Remark = normalizedEndpoint.Remark
 		endpoint.SortOrder = i
 

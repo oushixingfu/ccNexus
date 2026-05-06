@@ -9,6 +9,12 @@ import (
 
 // ClaudeReqToOpenAI converts Claude request to OpenAI Chat request
 func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
+	return ClaudeReqToOpenAIWithThinking(claudeReq, model, "")
+}
+
+// ClaudeReqToOpenAIWithThinking converts Claude request to OpenAI Chat request
+// and injects endpoint-level reasoning effort when configured.
+func ClaudeReqToOpenAIWithThinking(claudeReq []byte, model string, thinking string) ([]byte, error) {
 	var req transformer.ClaudeRequest
 	if err := json.Unmarshal(claudeReq, &req); err != nil {
 		return nil, err
@@ -118,6 +124,9 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
 	}
 	if req.Temperature > 0 {
 		openaiReq.Temperature = &req.Temperature
+	}
+	if thinking != "" && thinking != "off" {
+		openaiReq.Reasoning = map[string]interface{}{"effort": thinking}
 	}
 
 	// Convert tools

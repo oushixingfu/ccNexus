@@ -191,6 +191,7 @@ export function showAddEndpointModal() {
     document.getElementById('endpointAuthMode').value = 'api_key';
     document.getElementById('endpointTransformer').value = 'claude';
     document.getElementById('endpointModel').value = '';
+    document.getElementById('endpointThinking').value = 'off';
     document.getElementById('endpointRemark').value = '';
     handleAuthModeChange();
     updateManageTokenPoolButton();
@@ -210,6 +211,7 @@ export function showAddEndpointModalWithPreset(presetData) {
 	document.getElementById('endpointAuthMode').value = presetData.authMode || 'api_key';
 	document.getElementById('endpointTransformer').value = presetData.transformer || 'claude';
 	document.getElementById('endpointModel').value = presetData.model || '';
+	document.getElementById('endpointThinking').value = presetData.thinking || 'off';
 	document.getElementById('endpointRemark').value = presetData.remark || '';
 	handleAuthModeChange();
 	updateManageTokenPoolButton();
@@ -232,6 +234,7 @@ export async function editEndpoint(index) {
     document.getElementById('endpointAuthMode').value = ep.authMode || 'api_key';
     document.getElementById('endpointTransformer').value = ep.transformer || 'claude';
     document.getElementById('endpointModel').value = ep.model || '';
+    document.getElementById('endpointThinking').value = ep.thinking || 'off';
     document.getElementById('endpointRemark').value = ep.remark || '';
 
     handleAuthModeChange();
@@ -260,6 +263,7 @@ export async function saveEndpoint() {
 	const authMode = getEndpointAuthMode();
 	let transformer = document.getElementById('endpointTransformer').value;
     const model = document.getElementById('endpointModel').value.trim();
+    const thinking = document.getElementById('endpointThinking').value || 'off';
     const remark = document.getElementById('endpointRemark').value.trim();
     const isCodexTokenPool = isCodexTokenPoolMode(authMode);
 
@@ -294,9 +298,9 @@ export async function saveEndpoint() {
 
     try {
         if (currentEditIndex === -1) {
-            await addEndpoint(name, url, key, authMode, transformer, model, remark);
+            await addEndpoint(name, url, key, authMode, transformer, model, thinking, remark);
         } else {
-            await updateEndpoint(currentEditIndex, name, url, key, authMode, transformer, model, remark);
+            await updateEndpoint(currentEditIndex, name, url, key, authMode, transformer, model, thinking, remark);
         }
 
         closeModal();

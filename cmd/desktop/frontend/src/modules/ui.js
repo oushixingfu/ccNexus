@@ -448,6 +448,19 @@ export function initUI() {
                         </p>
                     </div>
                     <div class="form-group">
+                        <label>${t('modal.thinking')}</label>
+                        <select id="endpointThinking">
+                            <option value="off">${t('modal.thinkingOff')}</option>
+                            <option value="low">${t('modal.thinkingLow')}</option>
+                            <option value="medium">${t('modal.thinkingMedium')}</option>
+                            <option value="high">${t('modal.thinkingHigh')}</option>
+                            <option value="xhigh">${t('modal.thinkingXHigh')}</option>
+                        </select>
+                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
+                            ${t('modal.thinkingHelp')}
+                        </p>
+                    </div>
+                    <div class="form-group">
                         <label>${t('modal.remark')}</label>
                         <input type="text" id="endpointRemark" placeholder="${t('modal.remarkHelp')}">
                     </div>

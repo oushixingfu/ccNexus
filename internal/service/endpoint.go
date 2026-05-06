@@ -136,7 +136,7 @@ func (e *EndpointService) resolveEndpointAPIKey(endpoint config.Endpoint) (strin
 }
 
 // AddEndpoint adds a new endpoint
-func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
+func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
 	endpoints := e.config.GetEndpoints()
 	for _, ep := range endpoints {
 		if ep.Name == name {
@@ -162,6 +162,7 @@ func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transforme
 		Enabled:     true,
 		Transformer: transformer,
 		Model:       model,
+		Thinking:    thinking,
 		Remark:      remark,
 	}
 	config.ApplyEndpointAuthModeRules(&newEndpoint)
@@ -227,7 +228,7 @@ func (e *EndpointService) RemoveEndpoint(index int) error {
 }
 
 // UpdateEndpoint updates an endpoint by index
-func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
+func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
 	endpoints := e.config.GetEndpoints()
 
 	if index < 0 || index >= len(endpoints) {
@@ -264,6 +265,7 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 		Enabled:     enabled,
 		Transformer: transformer,
 		Model:       model,
+		Thinking:    thinking,
 		Remark:      remark,
 	}
 	config.ApplyEndpointAuthModeRules(&updatedEndpoint)

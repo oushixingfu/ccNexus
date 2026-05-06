@@ -7,12 +7,18 @@ import (
 
 // OpenAITransformer transforms Claude Code requests to OpenAI Chat format
 type OpenAITransformer struct {
-	model string
+	model    string
+	thinking string
 }
 
 // NewOpenAITransformer creates a new transformer
 func NewOpenAITransformer(model string) *OpenAITransformer {
-	return &OpenAITransformer{model: model}
+	return NewOpenAITransformerWithThinking(model, "")
+}
+
+// NewOpenAITransformerWithThinking creates a new transformer with endpoint-level reasoning effort.
+func NewOpenAITransformerWithThinking(model string, thinking string) *OpenAITransformer {
+	return &OpenAITransformer{model: model, thinking: thinking}
 }
 
 func (t *OpenAITransformer) Name() string {
@@ -20,7 +26,7 @@ func (t *OpenAITransformer) Name() string {
 }
 
 func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
-	return convert.ClaudeReqToOpenAI(req, t.model)
+	return convert.ClaudeReqToOpenAIWithThinking(req, t.model, t.thinking)
 }
 
 func (t *OpenAITransformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {

@@ -1,0 +1,2458 @@
+diff --git a/cmd/desktop/app.go b/cmd/desktop/app.go
+index 6fd2e9d..75cf39a 100644
+--- a/cmd/desktop/app.go
++++ b/cmd/desktop/app.go
+@@ -397,12 +397,12 @@ func (a *App) GetStatsTrendByPeriod(period string) string {
+ 
+ // ========== Endpoint Bindings ==========
+ 
+-func (a *App) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
+-	return a.endpoint.AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark)
++func (a *App) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
++	return a.endpoint.AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking, remark)
+ }
+ func (a *App) RemoveEndpoint(index int) error { return a.endpoint.RemoveEndpoint(index) }
+-func (a *App) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
+-	return a.endpoint.UpdateEndpoint(index, name, apiUrl, apiKey, authMode, transformer, model, remark)
++func (a *App) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
++	return a.endpoint.UpdateEndpoint(index, name, apiUrl, apiKey, authMode, transformer, model, thinking, remark)
+ }
+ func (a *App) ToggleEndpoint(index int, enabled bool) error {
+ 	return a.endpoint.ToggleEndpoint(index, enabled)
+diff --git a/cmd/desktop/frontend/src/modules/config.js b/cmd/desktop/frontend/src/modules/config.js
+index e1e1313..ecc651b 100644
+--- a/cmd/desktop/frontend/src/modules/config.js
++++ b/cmd/desktop/frontend/src/modules/config.js
+@@ -40,12 +40,12 @@ export async function updatePort(port) {
+     await window.go.main.App.UpdatePort(port);
+ }
+ 
+-export async function addEndpoint(name, url, key, authMode, transformer, model, remark) {
+-    await window.go.main.App.AddEndpoint(name, url, key, authMode, transformer, model, remark || '');
++export async function addEndpoint(name, url, key, authMode, transformer, model, thinking, remark) {
++    await window.go.main.App.AddEndpoint(name, url, key, authMode, transformer, model, thinking || 'off', remark || '');
+ }
+ 
+-export async function updateEndpoint(index, name, url, key, authMode, transformer, model, remark) {
+-    await window.go.main.App.UpdateEndpoint(index, name, url, key, authMode, transformer, model, remark || '');
++export async function updateEndpoint(index, name, url, key, authMode, transformer, model, thinking, remark) {
++    await window.go.main.App.UpdateEndpoint(index, name, url, key, authMode, transformer, model, thinking || 'off', remark || '');
+ }
+ 
+ export async function removeEndpoint(index) {
+diff --git a/cmd/desktop/frontend/src/modules/modal.js b/cmd/desktop/frontend/src/modules/modal.js
+index d94e6f2..a5cc823 100644
+--- a/cmd/desktop/frontend/src/modules/modal.js
++++ b/cmd/desktop/frontend/src/modules/modal.js
+@@ -191,6 +191,7 @@ export function showAddEndpointModal() {
+     document.getElementById('endpointAuthMode').value = 'api_key';
+     document.getElementById('endpointTransformer').value = 'claude';
+     document.getElementById('endpointModel').value = '';
++    document.getElementById('endpointThinking').value = 'off';
+     document.getElementById('endpointRemark').value = '';
+     handleAuthModeChange();
+     updateManageTokenPoolButton();
+@@ -210,6 +211,7 @@ export function showAddEndpointModalWithPreset(presetData) {
+ 	document.getElementById('endpointAuthMode').value = presetData.authMode || 'api_key';
+ 	document.getElementById('endpointTransformer').value = presetData.transformer || 'claude';
+ 	document.getElementById('endpointModel').value = presetData.model || '';
++	document.getElementById('endpointThinking').value = presetData.thinking || 'off';
+ 	document.getElementById('endpointRemark').value = presetData.remark || '';
+ 	handleAuthModeChange();
+ 	updateManageTokenPoolButton();
+@@ -232,6 +234,7 @@ export async function editEndpoint(index) {
+     document.getElementById('endpointAuthMode').value = ep.authMode || 'api_key';
+     document.getElementById('endpointTransformer').value = ep.transformer || 'claude';
+     document.getElementById('endpointModel').value = ep.model || '';
++    document.getElementById('endpointThinking').value = ep.thinking || 'off';
+     document.getElementById('endpointRemark').value = ep.remark || '';
+ 
+     handleAuthModeChange();
+@@ -260,6 +263,7 @@ export async function saveEndpoint() {
+ 	const authMode = getEndpointAuthMode();
+ 	let transformer = document.getElementById('endpointTransformer').value;
+     const model = document.getElementById('endpointModel').value.trim();
++    const thinking = document.getElementById('endpointThinking').value || 'off';
+     const remark = document.getElementById('endpointRemark').value.trim();
+     const isCodexTokenPool = isCodexTokenPoolMode(authMode);
+ 
+@@ -294,9 +298,9 @@ export async function saveEndpoint() {
+ 
+     try {
+         if (currentEditIndex === -1) {
+-            await addEndpoint(name, url, key, authMode, transformer, model, remark);
++            await addEndpoint(name, url, key, authMode, transformer, model, thinking, remark);
+         } else {
+-            await updateEndpoint(currentEditIndex, name, url, key, authMode, transformer, model, remark);
++            await updateEndpoint(currentEditIndex, name, url, key, authMode, transformer, model, thinking, remark);
+         }
+ 
+         closeModal();
+diff --git a/cmd/desktop/frontend/src/modules/ui.js b/cmd/desktop/frontend/src/modules/ui.js
+index f771ce7..bf7861a 100644
+--- a/cmd/desktop/frontend/src/modules/ui.js
++++ b/cmd/desktop/frontend/src/modules/ui.js
+@@ -447,6 +447,19 @@ export function initUI() {
+                             ${t('modal.modelHelp')}
+                         </p>
+                     </div>
++                    <div class="form-group">
++                        <label>${t('modal.thinking')}</label>
++                        <select id="endpointThinking">
++                            <option value="off">${t('modal.thinkingOff')}</option>
++                            <option value="low">${t('modal.thinkingLow')}</option>
++                            <option value="medium">${t('modal.thinkingMedium')}</option>
++                            <option value="high">${t('modal.thinkingHigh')}</option>
++                            <option value="xhigh">${t('modal.thinkingXHigh')}</option>
++                        </select>
++                        <p style="color: #666; font-size: 12px; margin-top: 5px;">
++                            ${t('modal.thinkingHelp')}
++                        </p>
++                    </div>
+                     <div class="form-group">
+                         <label>${t('modal.remark')}</label>
+                         <input type="text" id="endpointRemark" placeholder="${t('modal.remarkHelp')}">
+diff --git a/cmd/server/webui/api/endpoints.go b/cmd/server/webui/api/endpoints.go
+index 857510b..2772075 100644
+--- a/cmd/server/webui/api/endpoints.go
++++ b/cmd/server/webui/api/endpoints.go
+@@ -118,6 +118,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
+ 		Enabled     bool   `json:"enabled"`
+ 		Transformer string `json:"transformer"`
+ 		Model       string `json:"model"`
++		Thinking    string `json:"thinking"`
+ 		Remark      string `json:"remark"`
+ 		CloneFrom   string `json:"cloneFrom"` // Clone from existing endpoint name
+ 	}
+@@ -147,6 +148,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
+ 		AuthMode:    authMode,
+ 		Transformer: req.Transformer,
+ 		Model:       req.Model,
++		Thinking:    req.Thinking,
+ 		Remark:      req.Remark,
+ 	}
+ 	if normalizedEndpoint.Transformer == "" {
+@@ -157,6 +159,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
+ 	req.APIUrl = normalizedEndpoint.APIUrl
+ 	req.APIKey = normalizedEndpoint.APIKey
+ 	req.Transformer = normalizedEndpoint.Transformer
++	req.Thinking = normalizedEndpoint.Thinking
+ 
+ 	// Validate required fields
+ 	if req.Name == "" || req.APIUrl == "" {
+@@ -196,6 +199,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
+ 		Enabled:     req.Enabled,
+ 		Transformer: req.Transformer,
+ 		Model:       req.Model,
++		Thinking:    req.Thinking,
+ 		Remark:      req.Remark,
+ 		SortOrder:   len(endpoints),
+ 		CreatedAt:   time.Now(),
+@@ -227,6 +231,7 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
+ 		Enabled     bool   `json:"enabled"`
+ 		Transformer string `json:"transformer"`
+ 		Model       string `json:"model"`
++		Thinking    string `json:"thinking"`
+ 		Remark      string `json:"remark"`
+ 	}
+ 
+@@ -280,6 +285,7 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
+ 		Enabled:     existing.Enabled,
+ 		Transformer: existing.Transformer,
+ 		Model:       existing.Model,
++		Thinking:    existing.Thinking,
+ 		Remark:      existing.Remark,
+ 	}
+ 	if normalizedEndpoint.Transformer == "" {
+@@ -290,6 +296,7 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
+ 	existing.APIKey = normalizedEndpoint.APIKey
+ 	existing.AuthMode = normalizedEndpoint.AuthMode
+ 	existing.Transformer = normalizedEndpoint.Transformer
++	existing.Thinking = normalizedEndpoint.Thinking
+ 	if existing.AuthMode == config.AuthModeAPIKey && existing.APIKey == "" {
+ 		WriteError(w, http.StatusBadRequest, "apiKey is required in api_key mode")
+ 		return
+@@ -301,6 +308,9 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
+ 	if req.Model != "" {
+ 		existing.Model = req.Model
+ 	}
++	if req.Thinking != "" {
++		existing.Thinking = config.NormalizeThinkingEffort(req.Thinking)
++	}
+ 	existing.Remark = req.Remark
+ 	existing.UpdatedAt = time.Now()
+ 
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 4d5999b..80544ba 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -15,6 +15,12 @@ const (
+ 	AuthModeTokenPool      = "token_pool"
+ 	AuthModeCodexTokenPool = "codex_token_pool"
+ 
++	ThinkingOff    = "off"
++	ThinkingLow    = "low"
++	ThinkingMedium = "medium"
++	ThinkingHigh   = "high"
++	ThinkingXHigh  = "xhigh"
++
+ 	CodexTokenPoolAPIURL      = "https://chatgpt.com/backend-api/codex"
+ 	CodexTokenPoolTransformer = "openai2"
+ )
+@@ -35,12 +41,28 @@ func IsTokenPoolAuthMode(mode string) bool {
+ 	return normalized == AuthModeTokenPool || normalized == AuthModeCodexTokenPool
+ }
+ 
++func NormalizeThinkingEffort(effort string) string {
++	switch strings.ToLower(strings.TrimSpace(effort)) {
++	case ThinkingLow:
++		return ThinkingLow
++	case ThinkingMedium:
++		return ThinkingMedium
++	case ThinkingHigh:
++		return ThinkingHigh
++	case ThinkingXHigh:
++		return ThinkingXHigh
++	default:
++		return ThinkingOff
++	}
++}
++
+ func ApplyEndpointAuthModeRules(ep *Endpoint) {
+ 	if ep == nil {
+ 		return
+ 	}
+ 
+ 	ep.AuthMode = NormalizeAuthMode(ep.AuthMode)
++	ep.Thinking = NormalizeThinkingEffort(ep.Thinking)
+ 	ep.APIUrl = strings.TrimSuffix(strings.TrimSpace(ep.APIUrl), "/")
+ 	ep.Transformer = strings.TrimSpace(ep.Transformer)
+ 
+@@ -100,6 +122,7 @@ type Endpoint struct {
+ 	Enabled     bool   `json:"enabled"`
+ 	Transformer string `json:"transformer,omitempty"` // Transformer type: claude, openai, gemini, deepseek
+ 	Model       string `json:"model,omitempty"`       // Target model name for non-Claude APIs
++	Thinking    string `json:"thinking,omitempty"`    // Reasoning effort: off, low, medium, high, xhigh
+ 	Remark      string `json:"remark,omitempty"`      // Optional remark for the endpoint
+ }
+ 
+@@ -584,6 +607,7 @@ type StorageEndpoint struct {
+ 	Enabled     bool
+ 	Transformer string
+ 	Model       string
++	Thinking    string
+ 	Remark      string
+ 	SortOrder   int
+ }
+@@ -608,6 +632,7 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
+ 			Enabled:     ep.Enabled,
+ 			Transformer: ep.Transformer,
+ 			Model:       ep.Model,
++			Thinking:    ep.Thinking,
+ 			Remark:      ep.Remark,
+ 		}
+ 		if endpoint.Transformer == "" {
+@@ -861,6 +886,7 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
+ 			Enabled:     ep.Enabled,
+ 			Transformer: ep.Transformer,
+ 			Model:       ep.Model,
++			Thinking:    ep.Thinking,
+ 			Remark:      ep.Remark,
+ 		}
+ 		if normalizedEndpoint.Transformer == "" {
+@@ -873,6 +899,7 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
+ 		endpoint.Enabled = normalizedEndpoint.Enabled
+ 		endpoint.Transformer = normalizedEndpoint.Transformer
+ 		endpoint.Model = normalizedEndpoint.Model
++		endpoint.Thinking = normalizedEndpoint.Thinking
+ 		endpoint.Remark = normalizedEndpoint.Remark
+ 		endpoint.SortOrder = i
+ 
+diff --git a/internal/proxy/endpoint_cooldown.go b/internal/proxy/endpoint_cooldown.go
+new file mode 100644
+index 0000000..3c40f9f
+--- /dev/null
++++ b/internal/proxy/endpoint_cooldown.go
+@@ -0,0 +1,89 @@
++package proxy
++
++import (
++	"time"
++
++	"github.com/lich0821/ccNexus/internal/config"
++	"github.com/lich0821/ccNexus/internal/logger"
++)
++
++const endpointQuotaExhaustedCooldown = 10 * time.Minute
++
++type endpointCooldown struct {
++	Reason string
++	Until  time.Time
++}
++
++func (p *Proxy) markEndpointCooldown(endpointName string, reason string, duration time.Duration, obs requestObservability, attemptNumber int) {
++	if endpointName == "" || duration <= 0 {
++		return
++	}
++	until := time.Now().Add(duration)
++
++	p.cooldownMu.Lock()
++	if p.endpointCooldowns == nil {
++		p.endpointCooldowns = make(map[string]endpointCooldown)
++	}
++	p.endpointCooldowns[endpointName] = endpointCooldown{Reason: sanitizeLogField(reason), Until: until}
++	p.cooldownMu.Unlock()
++
++	logger.Debug("[COOLDOWN] %s cooldown=%s until=%s %s cooldown_reason=%s",
++		endpointName,
++		duration.Round(time.Millisecond),
++		until.Format(time.RFC3339),
++		requestLogFields(obs, endpointName, attemptNumber, 0, reason),
++		sanitizeLogField(reason),
++	)
++}
++
++func (p *Proxy) clearEndpointCooldown(endpointName string) {
++	if endpointName == "" {
++		return
++	}
++	p.cooldownMu.Lock()
++	defer p.cooldownMu.Unlock()
++	delete(p.endpointCooldowns, endpointName)
++}
++
++func (p *Proxy) clearEndpointCooldowns() {
++	p.cooldownMu.Lock()
++	defer p.cooldownMu.Unlock()
++	p.endpointCooldowns = make(map[string]endpointCooldown)
++}
++
++func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs requestObservability) []config.Endpoint {
++	if len(endpoints) <= 1 {
++		return endpoints
++	}
++
++	now := time.Now()
++	available := make([]config.Endpoint, 0, len(endpoints))
++
++	p.cooldownMu.Lock()
++	defer p.cooldownMu.Unlock()
++
++	for _, endpoint := range endpoints {
++		cooldown, ok := p.endpointCooldowns[endpoint.Name]
++		if !ok {
++			available = append(available, endpoint)
++			continue
++		}
++		if !cooldown.Until.After(now) {
++			delete(p.endpointCooldowns, endpoint.Name)
++			available = append(available, endpoint)
++			continue
++		}
++		logger.Debug("[COOLDOWN] Skipping cooled endpoint for request plan: %s remaining=%s %s cooldown_reason=%s",
++			endpoint.Name,
++			cooldown.Until.Sub(now).Round(time.Millisecond),
++			requestLogFields(obs, endpoint.Name, 0, 0, cooldown.Reason),
++			sanitizeLogField(cooldown.Reason),
++		)
++	}
++
++	if len(available) == 0 {
++		logger.Debug("[COOLDOWN] All enabled endpoints are cooled; using full endpoint list %s", requestLogFields(obs, "", 0, 0, "all_endpoints_cooled"))
++		return endpoints
++	}
++	return available
++}
+diff --git a/internal/proxy/endpoint_resolver.go b/internal/proxy/endpoint_resolver.go
+index ca76985..3377765 100644
+--- a/internal/proxy/endpoint_resolver.go
++++ b/internal/proxy/endpoint_resolver.go
+@@ -100,8 +100,9 @@ func (r *EndpointResolver) parseEndpointFromHeader(req *http.Request) string {
+ 
+ // parseEndpointFromModel 从模型名解析端点（支持 @endpoint 格式）
+ // 格式：
+-//   @endpoint-name/model-name → 返回 (endpoint-name, model-name)
+-//   @endpoint-name → 返回 (endpoint-name, "")
++//
++//	@endpoint-name/model-name → 返回 (endpoint-name, model-name)
++//	@endpoint-name → 返回 (endpoint-name, "")
+ func (r *EndpointResolver) parseEndpointFromModel(model string) (string, string) {
+ 	model = strings.TrimSpace(model)
+ 	if !strings.HasPrefix(model, "@") {
+@@ -154,4 +155,4 @@ func (r *EndpointResolver) findEndpointByName(name string, endpoints []config.En
+ 		}
+ 	}
+ 	return nil
+-}
+\ No newline at end of file
++}
+diff --git a/internal/proxy/failover_policy_test.go b/internal/proxy/failover_policy_test.go
+new file mode 100644
+index 0000000..48c4abc
+--- /dev/null
++++ b/internal/proxy/failover_policy_test.go
+@@ -0,0 +1,227 @@
++package proxy
++
++import (
++	"context"
++	"fmt"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/lich0821/ccNexus/internal/config"
++	"github.com/lich0821/ccNexus/internal/logger"
++)
++
++func TestHTTPRetryableStatusUsesSlowEndpointFailover(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	var primaryHits int
++	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		primaryHits++
++		w.Header().Set("Content-Type", "application/json")
++		if primaryHits <= 2 {
++			w.WriteHeader(http.StatusInternalServerError)
++			_, _ = w.Write([]byte(`{"error":{"message":"Too Many Requests"}}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{"id":"resp-primary","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer primary.Close()
++
++	var fallbackHits int
++	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		fallbackHits++
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer fallback.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", primary.URL),
++		failoverPolicyTestEndpoint("Fallback", fallback.URL),
++	}, primary.Client())
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set(headerCCNexusRequestID, "req-slow-failover")
++	rec := httptest.NewRecorder()
++
++	p.handleProxy(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected request to succeed on primary after slow retry, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if primaryHits != 3 {
++		t.Fatalf("expected slow HTTP failover to try primary 3 times before rotating, got %d", primaryHits)
++	}
++	if fallbackHits != 0 {
++		t.Fatalf("expected fallback endpoint not to be used before 3 HTTP failures, got %d hits", fallbackHits)
++	}
++	if got := rec.Header().Get(headerCCNexusEndpoint); got != "Primary" {
++		t.Fatalf("expected final endpoint header Primary, got %q", got)
++	}
++	if got := rec.Header().Get(headerCCNexusAttempt); got != "3" {
++		t.Fatalf("expected final attempt header 3, got %q", got)
++	}
++}
++
++func TestQuotaExhaustedUsesImmediateRequestLocalFailoverWithoutBackoff(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	var primaryHits int
++	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		primaryHits++
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusForbidden)
++		_, _ = w.Write([]byte(`{"error":{"message":"用户额度不足, 剩余额度: ＄0.000000","type":"new_api_error","code":"insufficient_user_quota"}}`))
++	}))
++	defer primary.Close()
++
++	var fallbackHits int
++	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		fallbackHits++
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer fallback.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", primary.URL),
++		failoverPolicyTestEndpoint("Fallback", fallback.URL),
++	}, primary.Client())
++	var sleeps []time.Duration
++	p.retrySleep = func(d time.Duration) {
++		sleeps = append(sleeps, d)
++	}
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set(headerCCNexusRequestID, "req-quota-exhausted")
++	rec := httptest.NewRecorder()
++
++	p.handleProxy(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected request to immediately fail over after quota exhaustion, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if primaryHits != 1 {
++		t.Fatalf("expected quota exhausted endpoint to be tried once, got %d", primaryHits)
++	}
++	if fallbackHits != 1 {
++		t.Fatalf("expected fallback endpoint to be used once, got %d", fallbackHits)
++	}
++	if len(sleeps) != 0 {
++		t.Fatalf("expected no backoff sleeps for quota exhaustion, got %v", sleeps)
++	}
++	if got := rec.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
++		t.Fatalf("expected final endpoint header Fallback, got %q", got)
++	}
++	if got := rec.Header().Get(headerCCNexusAttempt); got != "2" {
++		t.Fatalf("expected quota exhausted fallback on second overall attempt, got attempt header %q", got)
++	}
++	if got := p.GetCurrentEndpointName(); got != "Primary" {
++		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
++	}
++
++	logs := joinedProxyLogs()
++	for _, want := range []string{
++		"request_id=req-quota-exhausted",
++		"retry_reason=quota_exhausted",
++		"failover_scope=request_local",
++		"failover_reason=quota_exhausted",
++	} {
++		if !strings.Contains(logs, want) {
++			t.Fatalf("expected logs to contain %q, got logs:\n%s", want, logs)
++		}
++	}
++	if strings.Contains(logs, "Backing off before retry") {
++		t.Fatalf("expected quota exhaustion not to back off, got logs:\n%s", logs)
++	}
++	if strings.Contains(logs, "[SWITCH]") {
++		t.Fatalf("expected no global switch log during quota failover, got logs:\n%s", logs)
++	}
++}
++
++func TestConnectionFailureUsesFastEndpointFailover(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	badURL := closedLocalHTTPURL(t)
++	var fallbackHits int
++	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		fallbackHits++
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer fallback.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", badURL),
++		failoverPolicyTestEndpoint("Fallback", fallback.URL),
++	}, fallback.Client())
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set(headerCCNexusRequestID, "req-fast-failover")
++	rec := httptest.NewRecorder()
++
++	p.handleProxy(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected request to succeed on fallback after fast connection failover, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if fallbackHits != 1 {
++		t.Fatalf("expected fallback endpoint to be used once, got %d hits", fallbackHits)
++	}
++	if got := rec.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
++		t.Fatalf("expected final endpoint header Fallback, got %q", got)
++	}
++	if got := rec.Header().Get(headerCCNexusAttempt); got != "3" {
++		t.Fatalf("expected connection failure to rotate on third overall attempt, got attempt header %q", got)
++	}
++}
++
++func newFailoverPolicyTestProxy(endpoints []config.Endpoint, client *http.Client) *Proxy {
++	cfg := config.DefaultConfig()
++	cfg.UpdateEndpoints(endpoints)
++	return &Proxy{
++		config:         cfg,
++		stats:          NewStats(&noopStatsStorage{}, "test-device"),
++		httpClient:     client,
++		activeRequests: make(map[string]int),
++		endpointCtx:    make(map[string]context.Context),
++		endpointCancel: make(map[string]context.CancelFunc),
++		currentIndex:   0,
++		resolver:       NewEndpointResolverWithFunc(cfg.GetEndpoints),
++		retrySleep:     func(time.Duration) {},
++	}
++}
++
++func failoverPolicyTestEndpoint(name, apiURL string) config.Endpoint {
++	return config.Endpoint{
++		Name:        name,
++		APIUrl:      apiURL,
++		APIKey:      "test-key",
++		AuthMode:    config.AuthModeAPIKey,
++		Enabled:     true,
++		Transformer: "openai2",
++		Model:       "gpt-5.5",
++	}
++}
++
++func closedLocalHTTPURL(t *testing.T) string {
++	t.Helper()
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("failed to allocate local TCP port: %v", err)
++	}
++	addr := ln.Addr().String()
++	if err := ln.Close(); err != nil {
++		t.Fatalf("failed to close local TCP listener: %v", err)
++	}
++	return fmt.Sprintf("http://%s", addr)
++}
+diff --git a/internal/proxy/handler.go b/internal/proxy/handler.go
+index 5ccc191..ce75ae7 100644
+--- a/internal/proxy/handler.go
++++ b/internal/proxy/handler.go
+@@ -160,6 +160,10 @@ func (p *Proxy) UpdateConfig(cfg *config.Config) error {
+ 		p.currentIndex = 0
+ 	}
+ 
++	// Clear endpoint cooldowns so manual config changes take effect immediately.
++	p.clearEndpointCooldowns()
++	logger.Debug("[CONFIG UPDATE] Cleared endpoint cooldowns")
++
+ 	// Clear models cache to force refresh with new endpoints
+ 	if p.modelsCache != nil {
+ 		p.modelsCache.Clear()
+diff --git a/internal/proxy/models.go b/internal/proxy/models.go
+index 7d4b502..7396005 100644
+--- a/internal/proxy/models.go
++++ b/internal/proxy/models.go
+@@ -133,10 +133,10 @@ func (p *Proxy) fetchModelsFromEndpoint(ep config.Endpoint) ([]ModelInfo, error)
+ 	// Parse response
+ 	var result struct {
+ 		Data []struct {
+-			ID         string `json:"id"`
+-			Object     string `json:"object"`
+-			Created    int64  `json:"created"`
+-			OwnedBy    string `json:"owned_by"`
++			ID      string `json:"id"`
++			Object  string `json:"object"`
++			Created int64  `json:"created"`
++			OwnedBy string `json:"owned_by"`
+ 		} `json:"data"`
+ 	}
+ 
+@@ -246,8 +246,8 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
+ 		// Try to fetch from endpoint's /v1/models API
+ 		models, err = p.fetchModelsFromEndpoint(ep)
+ 		if err != nil {
+-		// If fetch fails, use default models for this endpoint
+-		logger.Debug("Failed to fetch models from %s: %v", ep.Name, err)
++			// If fetch fails, use default models for this endpoint
++			logger.Debug("Failed to fetch models from %s: %v", ep.Name, err)
+ 			models = p.getDefaultModels(ep)
+ 		} else {
+ 			allFailed = false
+@@ -274,8 +274,8 @@ func (p *Proxy) writeModelsResponse(w http.ResponseWriter, models []ModelInfo) {
+ 	w.WriteHeader(http.StatusOK)
+ 
+ 	response := struct {
+-		Object string       `json:"object"`
+-		Data   []ModelInfo  `json:"data"`
++		Object string      `json:"object"`
++		Data   []ModelInfo `json:"data"`
+ 	}{
+ 		Object: "list",
+ 		Data:   models,
+diff --git a/internal/proxy/observability.go b/internal/proxy/observability.go
+new file mode 100644
+index 0000000..43b7f50
+--- /dev/null
++++ b/internal/proxy/observability.go
+@@ -0,0 +1,152 @@
++package proxy
++
++import (
++	"fmt"
++	"net"
++	"net/http"
++	"strconv"
++	"strings"
++
++	"github.com/google/uuid"
++	"github.com/lich0821/ccNexus/internal/logger"
++)
++
++const (
++	headerCCNexusRequestID = "X-ccNexus-Request-ID"
++	headerCCNexusEndpoint  = "X-ccNexus-Endpoint"
++	headerCCNexusAttempt   = "X-ccNexus-Attempt"
++)
++
++type requestObservability struct {
++	RequestID string
++	ClientIP  string
++	Agent     string
++}
++
++func newRequestObservability(r *http.Request) requestObservability {
++	requestID := firstNonEmptyHeader(r.Header, headerCCNexusRequestID, "X-Request-ID", "X-Correlation-ID")
++	if requestID == "" {
++		requestID = uuid.NewString()
++	}
++
++	return requestObservability{
++		RequestID: sanitizeLogField(requestID),
++		ClientIP:  sanitizeLogField(extractClientIP(r)),
++		Agent:     sanitizeLogField(extractAgentHeader(r)),
++	}
++}
++
++func applyRequestObservabilityHeaders(w http.ResponseWriter, obs requestObservability, endpointName string, attempt int) {
++	if obs.RequestID != "" {
++		w.Header().Set(headerCCNexusRequestID, obs.RequestID)
++	}
++	if strings.TrimSpace(endpointName) != "" {
++		w.Header().Set(headerCCNexusEndpoint, endpointName)
++	}
++	if attempt > 0 {
++		w.Header().Set(headerCCNexusAttempt, strconv.Itoa(attempt))
++	}
++}
++
++func logRequestAttemptStart(obs requestObservability, endpointName, action, modelName string, requestBytes int, attempt int, proxyLabel string) {
++	fields := requestLogFields(obs, endpointName, attempt, 0, "")
++	if strings.TrimSpace(proxyLabel) == "" {
++		logger.Debug("[%s] %s %s %d %s", endpointName, action, modelName, requestBytes, fields)
++		return
++	}
++	logger.Debug("[%s] %s %s %d %s %s", endpointName, action, modelName, requestBytes, proxyLabel, fields)
++}
++
++func logRequestAttemptResult(obs requestObservability, endpointName string, attempt int, upstreamStatus int, retryReason string, format string, args ...interface{}) {
++	message := fmt.Sprintf(format, args...)
++	fields := requestLogFields(obs, endpointName, attempt, upstreamStatus, retryReason)
++	logger.Debug("[%s] %s %s", endpointName, message, fields)
++}
++
++func logRequestAttemptWarn(obs requestObservability, endpointName string, attempt int, upstreamStatus int, retryReason string, format string, args ...interface{}) {
++	message := fmt.Sprintf(format, args...)
++	fields := requestLogFields(obs, endpointName, attempt, upstreamStatus, retryReason)
++	logger.Warn("[%s] %s %s", endpointName, message, fields)
++}
++
++func logRequestAttemptError(obs requestObservability, endpointName string, attempt int, upstreamStatus int, retryReason string, format string, args ...interface{}) {
++	message := fmt.Sprintf(format, args...)
++	fields := requestLogFields(obs, endpointName, attempt, upstreamStatus, retryReason)
++	logger.Error("[%s] %s %s", endpointName, message, fields)
++}
++
++func requestLogFields(obs requestObservability, endpointName string, attempt int, upstreamStatus int, retryReason string) string {
++	parts := []string{
++		"request_id=" + obs.RequestID,
++		"client_ip=" + obs.ClientIP,
++		"agent=" + obs.Agent,
++	}
++	if strings.TrimSpace(endpointName) != "" {
++		parts = append(parts, "endpoint="+sanitizeLogField(endpointName))
++	}
++	if attempt > 0 {
++		parts = append(parts, "attempt="+strconv.Itoa(attempt))
++	}
++	if upstreamStatus > 0 {
++		parts = append(parts, "upstream_status="+strconv.Itoa(upstreamStatus))
++	}
++	if strings.TrimSpace(retryReason) != "" {
++		parts = append(parts, "retry_reason="+sanitizeLogField(retryReason))
++	}
++	return strings.Join(parts, " ")
++}
++
++func firstNonEmptyHeader(headers http.Header, names ...string) string {
++	for _, name := range names {
++		if value := strings.TrimSpace(headers.Get(name)); value != "" {
++			return value
++		}
++	}
++	return ""
++}
++
++func extractAgentHeader(r *http.Request) string {
++	agent := firstNonEmptyHeader(
++		r.Header,
++		"X-OpenClaw-Agent",
++		"X-Agent-ID",
++		"X-Agent-Id",
++		"X-Agent-Name",
++		"X-Claude-Code-Session-Id",
++		"X-Claude-Code-Session",
++	)
++	if agent != "" {
++		return agent
++	}
++	if userAgent := strings.TrimSpace(r.UserAgent()); userAgent != "" {
++		return userAgent
++	}
++	return "unknown"
++}
++
++func extractClientIP(r *http.Request) string {
++	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
++		parts := strings.Split(forwarded, ",")
++		if ip := strings.TrimSpace(parts[0]); ip != "" {
++			return ip
++		}
++	}
++	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
++		return realIP
++	}
++	if host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr)); err == nil && host != "" {
++		return host
++	}
++	if remoteAddr := strings.TrimSpace(r.RemoteAddr); remoteAddr != "" {
++		return remoteAddr
++	}
++	return "unknown"
++}
++
++func sanitizeLogField(value string) string {
++	value = strings.TrimSpace(value)
++	if value == "" {
++		return "unknown"
++	}
++	return strings.Join(strings.Fields(value), "_")
++}
+diff --git a/internal/proxy/proxy.go b/internal/proxy/proxy.go
+index 962a779..438004f 100644
+--- a/internal/proxy/proxy.go
++++ b/internal/proxy/proxy.go
+@@ -41,7 +41,7 @@ type Proxy struct {
+ 	mu                sync.RWMutex
+ 	server            *http.Server
+ 	httpClient        *http.Client                  // Reusable HTTP client with connection pool
+-	activeRequests    map[string]bool               // tracks active requests by endpoint name
++	activeRequests    map[string]int                // tracks active request count by endpoint name
+ 	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
+ 	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
+ 	endpointCancel    map[string]context.CancelFunc // cancel functions per endpoint
+@@ -49,6 +49,9 @@ type Proxy struct {
+ 	onEndpointSuccess func(endpointName string)     // callback when endpoint request succeeds
+ 	modelsCache       *ModelsCache                  // Cache for /v1/models endpoint
+ 	resolver          *EndpointResolver             // 端点解析器，用于解析客户端指定的端点
++	retrySleep        func(time.Duration)           // injectable sleep hook for retry backoff tests
++	endpointCooldowns map[string]endpointCooldown   // temporary request-plan skips for deterministic endpoint failures
++	cooldownMu        sync.RWMutex                  // protects endpointCooldowns
+ }
+ 
+ // New creates a new Proxy instance
+@@ -73,16 +76,18 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
+ 	}
+ 
+ 	return &Proxy{
+-		config:         cfg,
+-		storage:        sqliteStorage,
+-		stats:          stats,
+-		currentIndex:   0,
+-		httpClient:     httpClient,
+-		activeRequests: make(map[string]bool),
+-		endpointCtx:    make(map[string]context.Context),
+-		endpointCancel: make(map[string]context.CancelFunc),
+-		modelsCache:    NewModelsCache(cfg.ModelsCacheTTL),
+-		resolver:       NewEndpointResolverWithFunc(cfg.GetEndpoints),
++		config:            cfg,
++		storage:           sqliteStorage,
++		stats:             stats,
++		currentIndex:      0,
++		httpClient:        httpClient,
++		activeRequests:    make(map[string]int),
++		endpointCtx:       make(map[string]context.Context),
++		endpointCancel:    make(map[string]context.CancelFunc),
++		modelsCache:       NewModelsCache(cfg.ModelsCacheTTL),
++		resolver:          NewEndpointResolverWithFunc(cfg.GetEndpoints),
++		retrySleep:        time.Sleep,
++		endpointCooldowns: make(map[string]endpointCooldown),
+ 	}
+ }
+ 
+@@ -164,21 +169,26 @@ func (p *Proxy) getCurrentEndpoint() config.Endpoint {
+ func (p *Proxy) markRequestActive(endpointName string) {
+ 	p.activeRequestsMu.Lock()
+ 	defer p.activeRequestsMu.Unlock()
+-	p.activeRequests[endpointName] = true
++	p.activeRequests[endpointName]++
+ }
+ 
+ // markRequestInactive marks an endpoint as having no active requests
+ func (p *Proxy) markRequestInactive(endpointName string) {
+ 	p.activeRequestsMu.Lock()
+ 	defer p.activeRequestsMu.Unlock()
+-	delete(p.activeRequests, endpointName)
++	count := p.activeRequests[endpointName]
++	if count <= 1 {
++		delete(p.activeRequests, endpointName)
++		return
++	}
++	p.activeRequests[endpointName] = count - 1
+ }
+ 
+ // hasActiveRequests checks if an endpoint has active requests
+ func (p *Proxy) hasActiveRequests(endpointName string) bool {
+ 	p.activeRequestsMu.RLock()
+ 	defer p.activeRequestsMu.RUnlock()
+-	return p.activeRequests[endpointName]
++	return p.activeRequests[endpointName] > 0
+ }
+ 
+ // isCurrentEndpoint checks if the given endpoint is still the current one
+@@ -312,6 +322,9 @@ func detectClientFormat(path string) ClientFormat {
+ 
+ // handleProxy handles the main proxy logic
+ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
++	obs := newRequestObservability(r)
++	applyRequestObservabilityHeaders(w, obs, "", 0)
++
+ 	bodyBytes, err := io.ReadAll(r.Body)
+ 	if err != nil {
+ 		logger.Error("Failed to read request body: %v", err)
+@@ -351,7 +364,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 	specifiedEndpoint, modelOverride, resolveErr := p.resolver.ResolveEndpoint(r, bodyBytes)
+ 	if resolveErr != nil {
+ 		// 端点指定错误，返回错误响应
+-		logger.Warn("端点解析失败: %v", resolveErr)
++		logger.Warn("端点解析失败: %v %s", resolveErr, requestLogFields(obs, "", 0, http.StatusBadRequest, "endpoint_resolve_failed"))
+ 		w.Header().Set("Content-Type", "application/json")
+ 		w.WriteHeader(http.StatusBadRequest)
+ 		errorResp := map[string]interface{}{
+@@ -373,9 +386,22 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 		logger.Debug("[Resolver] 使用指定端点: %s", specifiedEndpoint.Name)
+ 	}
+ 
+-	maxRetries := p.computeMaxRetries(endpoints)
++	requestEndpoints := endpoints
++	if !useSpecificEndpoint {
++		requestEndpoints = p.getRequestPlanEndpoints(endpoints, obs)
++	}
++	requestPlan := newRequestEndpointPlan(requestEndpoints, p.getCurrentEndpointIndex())
++	maxRetries := p.computeMaxRetries(requestEndpoints)
++	if useSpecificEndpoint {
++		maxRetries = endpointSlowFailoverAttempts
++	}
+ 	endpointAttempts := 0
+-	lastEndpointName := ""
++	advanceForFailure := func(current config.Endpoint, reason string, attemptNumber int) {
++		if !useSpecificEndpoint {
++			p.advanceRequestEndpoint(requestPlan, current, obs, attemptNumber, reason)
++		}
++		endpointAttempts = 0
++	}
+ 	refreshedCredentialAttempts := make(map[int64]bool)
+ 
+ 	for retry := 0; retry < maxRetries; retry++ {
+@@ -384,8 +410,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			// 使用指定的端点，不进行轮询
+ 			endpoint = *specifiedEndpoint
+ 		} else {
+-			// 使用轮询机制
+-			endpoint = p.getCurrentEndpoint()
++			// 使用请求级端点计划；失败 fallback 不修改全局 currentIndex
++			endpoint = requestPlan.Current()
+ 		}
+ 
+ 		if endpoint.Name == "" {
+@@ -393,13 +419,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			return
+ 		}
+ 
+-		// Reset attempts counter if endpoint changed (e.g., manual switch)
+-		if lastEndpointName != "" && lastEndpointName != endpoint.Name {
+-			endpointAttempts = 0
+-		}
+-		lastEndpointName = endpoint.Name
+-
+ 		endpointAttempts++
++		attemptNumber := retry + 1
++		applyRequestObservabilityHeaders(w, obs, endpoint.Name, attemptNumber)
+ 		p.markRequestActive(endpoint.Name)
+ 
+ 		authMode := config.NormalizeAuthMode(endpoint.AuthMode)
+@@ -409,22 +431,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 		if config.IsTokenPoolAuthMode(authMode) {
+ 			credential, err := p.selectCredential(endpoint.Name)
+ 			if err != nil {
+-				logger.Warn("[%s] Failed to select token pool credential: %v", endpoint.Name, err)
++				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "credential_select_failed", "Failed to select token pool credential: %v", err)
+ 				p.stats.RecordError(endpoint.Name)
+ 				p.markRequestInactive(endpoint.Name)
+-				if endpointAttempts >= 2 && !useSpecificEndpoint {
+-					p.rotateEndpoint()
+-					endpointAttempts = 0
++				if endpointAttempts >= endpointFastFailoverAttempts {
++					advanceForFailure(endpoint, "credential_select_failed", attemptNumber)
+ 				}
+ 				continue
+ 			}
+ 			if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+-				logger.Warn("[%s] No usable token in token pool", endpoint.Name)
++				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "no_usable_token", "No usable token in token pool")
+ 				p.stats.RecordError(endpoint.Name)
+ 				p.markRequestInactive(endpoint.Name)
+-				if endpointAttempts >= 2 && !useSpecificEndpoint {
+-					p.rotateEndpoint()
+-					endpointAttempts = 0
++				if endpointAttempts >= endpointFastFailoverAttempts {
++					advanceForFailure(endpoint, "no_usable_token", attemptNumber)
+ 				}
+ 				continue
+ 			}
+@@ -432,7 +452,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			if shouldTryCredentialRefresh(credential, time.Now().UTC()) {
+ 				refreshed, refreshErr := p.refreshCredential(endpoint, credential)
+ 				if refreshErr != nil {
+-					logger.Warn("[%s] Preflight credential refresh failed (id=%d): %v", endpoint.Name, credential.ID, refreshErr)
++					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "credential_refresh_failed", "Preflight credential refresh failed (id=%d): %v", credential.ID, refreshErr)
+ 				} else {
+ 					selectedCredential = refreshed
+ 					refreshedCredentialAttempts[refreshed.ID] = true
+@@ -444,24 +464,22 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 				credentialID = selectedCredential.ID
+ 			}
+ 		} else if apiKey == "" {
+-			logger.Warn("[%s] API key mode but apiKey is empty", endpoint.Name)
++			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "empty_api_key", "API key mode but apiKey is empty")
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			if endpointAttempts >= endpointFastFailoverAttempts {
++				advanceForFailure(endpoint, "empty_api_key", attemptNumber)
+ 			}
+ 			continue
+ 		}
+ 
+ 		trans, err := prepareTransformerForClient(clientFormat, endpoint)
+ 		if err != nil {
+-			logger.Error("[%s] %v", endpoint.Name, err)
++			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, "prepare_transformer_failed", "%v", err)
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			if endpointAttempts >= endpointFastFailoverAttempts {
++				advanceForFailure(endpoint, "prepare_transformer_failed", attemptNumber)
+ 			}
+ 			continue
+ 		}
+@@ -470,12 +488,11 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 
+ 		transformedBody, err := trans.TransformRequest(bodyBytes)
+ 		if err != nil {
+-			logger.Error("[%s] Failed to transform request: %v", endpoint.Name, err)
++			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, "transform_request_failed", "Failed to transform request: %v", err)
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			if endpointAttempts >= endpointFastFailoverAttempts {
++				advanceForFailure(endpoint, "transform_request_failed", attemptNumber)
+ 			}
+ 			continue
+ 		}
+@@ -521,38 +538,33 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 
+ 		proxyReq, err := buildProxyRequest(r, endpoint, apiKey, transformedBody, transformerName, selectedCredential)
+ 		if err != nil {
+-			logger.Error("[%s] Failed to create request: %v", endpoint.Name, err)
++			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, "build_request_failed", "Failed to create request: %v", err)
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			if endpointAttempts >= endpointFastFailoverAttempts {
++				advanceForFailure(endpoint, "build_request_failed", attemptNumber)
+ 			}
+ 			continue
+ 		}
+ 
+ 		proxyURL := resolveProxyURLForRequest(p.config, proxyReq.URL)
+ 		proxyLabel := strings.TrimSpace(proxyURL)
++		action := "Requesting"
+ 		if streamReq.Stream {
+-			if proxyLabel == "" {
+-				logger.Debug("[%s] Streaming %s %d", endpoint.Name, modelName, reqBytes)
+-			} else {
+-				logger.Debug("[%s] Streaming %s %d %s", endpoint.Name, modelName, reqBytes, proxyLabel)
+-			}
+-		} else {
+-			if proxyLabel == "" {
+-				logger.Debug("[%s] Requesting %s %d", endpoint.Name, modelName, reqBytes)
+-			} else {
+-				logger.Debug("[%s] Requesting %s %d %s", endpoint.Name, modelName, reqBytes, proxyLabel)
+-			}
++			action = "Streaming"
+ 		}
++		logRequestAttemptStart(obs, endpoint.Name, action, modelName, reqBytes, attemptNumber, proxyLabel)
+ 
+-		ctx := p.getEndpointContext(endpoint.Name)
++		ctx := r.Context()
+ 		resp, err := sendRequest(ctx, proxyReq, p.httpClient, p.config)
+ 		if err != nil {
+-			logger.Error("[%s] Request failed: %v", endpoint.Name, err)
++			retryReason := "send_request_failed"
+ 			if isTransientNetworkError(err) {
+-				logger.Warn("[%s] Transient network error, retrying same endpoint: %v", endpoint.Name, err)
++				retryReason = "transient_network_error"
++			}
++			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, retryReason, "Request failed: %v", err)
++			if isTransientNetworkError(err) {
++				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, retryReason, "Transient network error, retrying same endpoint: %v", err)
+ 				p.markRequestInactive(endpoint.Name)
+ 				time.Sleep(300 * time.Millisecond)
+ 				endpointAttempts = 0
+@@ -562,9 +574,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			if endpointAttempts >= endpointFastFailoverAttempts {
++				advanceForFailure(endpoint, retryReason, attemptNumber)
+ 			}
+ 			continue
+ 		}
+@@ -590,22 +601,22 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+ 				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
+ 				p.markCredentialSuccess(credentialID)
++				p.clearEndpointCooldown(endpoint.Name)
+ 				p.markRequestInactive(endpoint.Name)
+ 				if p.onEndpointSuccess != nil {
+ 					p.onEndpointSuccess(endpoint.Name)
+ 				}
+ 				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
+-				logger.Debug("[%s] Requested tokens=%d/%d latency=%s cred_id=%d", endpoint.Name, inputTokens, outputTokens, totalElapsed, credentialID)
++				logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
+ 				return
+ 			}
+-			logger.Warn("[%s] Failed to aggregate streaming response as non-stream: %v", endpoint.Name, err)
++			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "aggregate_streaming_failed", "Failed to aggregate streaming response as non-stream: %v", err)
+ 			p.markCredentialFailure(credentialID, 0, err.Error())
+ 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			if endpointAttempts >= endpointFastFailoverAttempts {
++				advanceForFailure(endpoint, "aggregate_streaming_failed", attemptNumber)
+ 			}
+ 			continue
+ 		}
+@@ -622,12 +633,13 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+ 			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
+ 			p.markCredentialSuccess(credentialID)
++			p.clearEndpointCooldown(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+ 			if p.onEndpointSuccess != nil {
+ 				p.onEndpointSuccess(endpoint.Name)
+ 			}
+ 			totalElapsed := time.Since(requestStart).Round(time.Millisecond)
+-			logger.Debug("[%s] Requested tokens=%d/%d latency=%s cred_id=%d", endpoint.Name, inputTokens, outputTokens, totalElapsed, credentialID)
++			logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
+ 			return
+ 		}
+ 
+@@ -638,14 +650,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+ 				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
+ 				p.markCredentialSuccess(credentialID)
+-			p.markRequestInactive(endpoint.Name)
+-			if p.onEndpointSuccess != nil {
+-				p.onEndpointSuccess(endpoint.Name)
++				p.clearEndpointCooldown(endpoint.Name)
++				p.markRequestInactive(endpoint.Name)
++				if p.onEndpointSuccess != nil {
++					p.onEndpointSuccess(endpoint.Name)
++				}
++				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
++				logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
++				return
+ 			}
+-			totalElapsed := time.Since(requestStart).Round(time.Millisecond)
+-			logger.Debug("[%s] Requested tokens=%d/%d latency=%s cred_id=%d", endpoint.Name, inputTokens, outputTokens, totalElapsed, credentialID)
+-			return
+-		}
+ 		}
+ 
+ 		if shouldRetry(resp.StatusCode) {
+@@ -660,15 +673,24 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			if len(errMsg) > 200 {
+ 				errMsg = errMsg[:200] + "..."
+ 			}
+-			logger.Warn("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
++			retryReason := retryReasonForHTTPStatus(resp.StatusCode, errMsg)
++			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, retryReason, "Request failed %d: %s", resp.StatusCode, errMsg)
+ 			logger.DebugLog("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
+ 			p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
+ 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+ 			p.stats.RecordError(endpoint.Name)
+ 			p.markRequestInactive(endpoint.Name)
+-			if endpointAttempts >= 2 {
+-				p.rotateEndpoint()
+-				endpointAttempts = 0
++			shouldFailover := shouldRotateEndpointAfterHTTPFailure(endpointAttempts, resp.StatusCode, errMsg)
++			if retryReason == "quota_exhausted" {
++				p.markEndpointCooldown(endpoint.Name, retryReason, endpointQuotaExhaustedCooldown, obs, attemptNumber)
++			}
++			if retryReason == "rate_limited" && !shouldFailover {
++				backoff := rateLimitBackoffDuration(endpointAttempts, resp.Header)
++				logger.Debug("[%s] Backing off before retry: %s %s retry_reason=%s", endpoint.Name, backoff, requestLogFields(obs, endpoint.Name, attemptNumber, resp.StatusCode, retryReason), retryReason)
++				p.sleepBeforeRetry(backoff)
++			}
++			if shouldFailover {
++				advanceForFailure(endpoint, retryReason, attemptNumber)
+ 			}
+ 			continue
+ 		}
+@@ -690,7 +712,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			}
+ 			if !shouldTreatCredentialAuthFailure(resp.StatusCode, errMsg) {
+ 				skipCredentialPenalty = true
+-				logger.Warn("[%s] Upstream %d looks like route/gateway denial, skipping credential invalidation", endpoint.Name, resp.StatusCode)
++				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "route_gateway_denial", "Upstream %d looks like route/gateway denial, skipping credential invalidation", resp.StatusCode)
+ 			}
+ 			if skipCredentialPenalty {
+ 				p.stats.RecordError(endpoint.Name)
+@@ -703,7 +725,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 					refreshedCredentialAttempts[credentialID] = true
+ 					refreshed, refreshErr := p.refreshCredential(endpoint, selectedCredential)
+ 					if refreshErr == nil {
+-						logger.Info("[%s] Credential refreshed after %d, retrying with updated token (id=%d)", endpoint.Name, resp.StatusCode, credentialID)
++						logger.Info("[%s] Credential refreshed after %d, retrying with updated token (id=%d) %s", endpoint.Name, resp.StatusCode, credentialID, requestLogFields(obs, endpoint.Name, attemptNumber, resp.StatusCode, "credential_refreshed"))
+ 						p.markRequestInactive(endpoint.Name)
+ 						endpointAttempts = 0
+ 						if refreshed != nil && refreshed.ID > 0 {
+@@ -711,14 +733,14 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 						}
+ 						continue
+ 					}
+-					logger.Warn("[%s] Credential refresh failed after %d (id=%d): %v", endpoint.Name, resp.StatusCode, credentialID, refreshErr)
++					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "credential_refresh_failed", "Credential refresh failed after %d (id=%d): %v", resp.StatusCode, credentialID, refreshErr)
+ 				}
+ 				p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
+ 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+ 				p.stats.RecordError(endpoint.Name)
+ 				p.markRequestInactive(endpoint.Name)
+ 				endpointAttempts = 0
+-				logger.Warn("[%s] Credential auth failed (%d), retrying with next token", endpoint.Name, resp.StatusCode)
++				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "credential_auth_failed", "Credential auth failed (%d), retrying with next token", resp.StatusCode)
+ 				continue
+ 			}
+ 		}
+@@ -733,7 +755,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 			if resp.StatusCode == http.StatusBadRequest &&
+ 				strings.Contains(errMsg, "api.responses.write") &&
+ 				strings.Contains(transformerName, "openai2") {
+-				logger.Warn("[%s] Upstream rejected /v1/responses scope (api.responses.write). Try transformer=openai (chat/completions) for this token.", endpoint.Name)
++				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "responses_scope_rejected", "Upstream rejected /v1/responses scope (api.responses.write). Try transformer=openai (chat/completions) for this token.")
+ 			}
+ 			if skipCredentialPenalty {
+ 				p.markCredentialFailure(credentialID, 0, errMsg)
+@@ -742,7 +764,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
+ 				p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
+ 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+ 			}
+-			logger.Warn("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, errMsg)
++			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "non_retryable_status", "Response %d: %s", resp.StatusCode, errMsg)
+ 			logger.DebugLog("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, errMsg)
+ 		}
+ 		// Remove Content-Encoding header since we've decompressed
+@@ -797,7 +819,7 @@ func (p *Proxy) markCredentialFailure(credentialID int64, statusCode int, errMsg
+ }
+ 
+ func (p *Proxy) computeMaxRetries(endpoints []config.Endpoint) int {
+-	baseRetries := len(endpoints) * 2
++	baseRetries := len(endpoints) * endpointSlowFailoverAttempts
+ 	if p.storage == nil || len(endpoints) == 0 {
+ 		return baseRetries
+ 	}
+diff --git a/internal/proxy/request.go b/internal/proxy/request.go
+index b7a2649..9e513a0 100644
+--- a/internal/proxy/request.go
++++ b/internal/proxy/request.go
+@@ -60,12 +60,12 @@ func prepareCCTransformer(endpoint config.Endpoint, endpointTransformer string)
+ 		if endpoint.Model == "" {
+ 			return nil, fmt.Errorf("OpenAI transformer requires model field")
+ 		}
+-		return cc.NewOpenAITransformer(endpoint.Model), nil
++		return cc.NewOpenAITransformerWithThinking(endpoint.Model, endpoint.Thinking), nil
+ 	case "openai2":
+ 		if endpoint.Model == "" {
+ 			return nil, fmt.Errorf("OpenAI2 transformer requires model field")
+ 		}
+-		return cc.NewOpenAI2Transformer(endpoint.Model), nil
++		return cc.NewOpenAI2TransformerWithThinking(endpoint.Model, endpoint.Thinking), nil
+ 	case "gemini":
+ 		if endpoint.Model == "" {
+ 			return nil, fmt.Errorf("Gemini transformer requires model field")
+diff --git a/internal/proxy/request_fallback.go b/internal/proxy/request_fallback.go
+new file mode 100644
+index 0000000..20427bd
+--- /dev/null
++++ b/internal/proxy/request_fallback.go
+@@ -0,0 +1,123 @@
++package proxy
++
++import (
++	"net/http"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/lich0821/ccNexus/internal/config"
++	"github.com/lich0821/ccNexus/internal/logger"
++)
++
++type requestEndpointPlan struct {
++	endpoints []config.Endpoint
++	index     int
++}
++
++func newRequestEndpointPlan(endpoints []config.Endpoint, startIndex int) *requestEndpointPlan {
++	copied := make([]config.Endpoint, len(endpoints))
++	copy(copied, endpoints)
++	if len(copied) == 0 {
++		return &requestEndpointPlan{endpoints: copied, index: 0}
++	}
++	if startIndex < 0 {
++		startIndex = 0
++	}
++	return &requestEndpointPlan{
++		endpoints: copied,
++		index:     startIndex % len(copied),
++	}
++}
++
++func (p *requestEndpointPlan) Current() config.Endpoint {
++	if p == nil || len(p.endpoints) == 0 {
++		return config.Endpoint{}
++	}
++	return p.endpoints[p.index%len(p.endpoints)]
++}
++
++func (p *requestEndpointPlan) Advance() config.Endpoint {
++	if p == nil || len(p.endpoints) == 0 {
++		return config.Endpoint{}
++	}
++	p.index = (p.index + 1) % len(p.endpoints)
++	return p.Current()
++}
++
++func (p *requestEndpointPlan) Len() int {
++	if p == nil {
++		return 0
++	}
++	return len(p.endpoints)
++}
++
++func (p *Proxy) getCurrentEndpointIndex() int {
++	p.mu.RLock()
++	defer p.mu.RUnlock()
++
++	endpoints := p.getEnabledEndpoints()
++	if len(endpoints) == 0 {
++		return 0
++	}
++	return p.currentIndex % len(endpoints)
++}
++
++func (p *Proxy) advanceRequestEndpoint(plan *requestEndpointPlan, from config.Endpoint, obs requestObservability, attemptNumber int, reason string) config.Endpoint {
++	if plan == nil || plan.Len() == 0 {
++		return config.Endpoint{}
++	}
++	if plan.Len() == 1 {
++		return plan.Current()
++	}
++
++	to := plan.Advance()
++	if strings.TrimSpace(from.Name) != "" && from.Name != to.Name {
++		logger.Debug("[FAILOVER] %s → %s %s failover_scope=request_local failover_reason=%s",
++			from.Name,
++			to.Name,
++			requestLogFields(obs, from.Name, attemptNumber, 0, reason),
++			sanitizeLogField(reason),
++		)
++	}
++	return to
++}
++
++func (p *Proxy) sleepBeforeRetry(d time.Duration) {
++	if d <= 0 {
++		return
++	}
++	if p.retrySleep != nil {
++		p.retrySleep(d)
++		return
++	}
++	time.Sleep(d)
++}
++
++func rateLimitBackoffDuration(attempt int, headers http.Header) time.Duration {
++	if retryAfter := parseRetryAfterHeader(headers.Get("Retry-After")); retryAfter > 0 {
++		return retryAfter
++	}
++	switch attempt {
++	case 1:
++		return 800 * time.Millisecond
++	case 2:
++		return 1500 * time.Millisecond
++	default:
++		return 2500 * time.Millisecond
++	}
++}
++
++func parseRetryAfterHeader(value string) time.Duration {
++	value = strings.TrimSpace(value)
++	if value == "" {
++		return 0
++	}
++	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
++		return time.Duration(seconds) * time.Second
++	}
++	if retryAt, err := http.ParseTime(value); err == nil {
++		return time.Until(retryAt)
++	}
++	return 0
++}
+diff --git a/internal/proxy/request_local_fallback_test.go b/internal/proxy/request_local_fallback_test.go
+new file mode 100644
+index 0000000..339d99b
+--- /dev/null
++++ b/internal/proxy/request_local_fallback_test.go
+@@ -0,0 +1,307 @@
++package proxy
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/lich0821/ccNexus/internal/config"
++	"github.com/lich0821/ccNexus/internal/logger"
++)
++
++func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	var primaryHits int
++	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		primaryHits++
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusInternalServerError)
++		_, _ = w.Write([]byte(`{"error":{"message":"Too Many Requests"}}`))
++	}))
++	defer primary.Close()
++
++	var fallbackHits int
++	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		fallbackHits++
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer fallback.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", primary.URL),
++		failoverPolicyTestEndpoint("Fallback", fallback.URL),
++	}, primary.Client())
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set(headerCCNexusRequestID, "req-local-fallback")
++	rec := httptest.NewRecorder()
++
++	p.handleProxy(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected request-local fallback to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if primaryHits != endpointSlowFailoverAttempts {
++		t.Fatalf("expected primary to be tried %d times before request-local fallback, got %d", endpointSlowFailoverAttempts, primaryHits)
++	}
++	if fallbackHits != 1 {
++		t.Fatalf("expected fallback to be hit once, got %d", fallbackHits)
++	}
++	if got := rec.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
++		t.Fatalf("expected response endpoint header Fallback, got %q", got)
++	}
++	if got := p.GetCurrentEndpointName(); got != "Primary" {
++		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
++	}
++
++	logs := joinedProxyLogs()
++	if !strings.Contains(logs, "failover_scope=request_local") {
++		t.Fatalf("expected request-local failover log, got logs:\n%s", logs)
++	}
++	if strings.Contains(logs, "[SWITCH]") {
++		t.Fatalf("expected no global switch log during request-local fallback, got logs:\n%s", logs)
++	}
++}
++
++func TestRequestLocalFallbackDoesNotAffectNextRequest(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	primaryHitsByRequest := map[string]int{}
++	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requestID := r.Header.Get(headerCCNexusRequestID)
++		primaryHitsByRequest[requestID]++
++		w.Header().Set("Content-Type", "application/json")
++		if requestID == "req-a" {
++			w.WriteHeader(http.StatusInternalServerError)
++			_, _ = w.Write([]byte(`{"error":{"message":"Too Many Requests"}}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{"id":"resp-primary","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer primary.Close()
++
++	var fallbackHits int
++	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		fallbackHits++
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer fallback.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", primary.URL),
++		failoverPolicyTestEndpoint("Fallback", fallback.URL),
++	}, primary.Client())
++
++	recA := issueFailoverPolicyTestRequest(p, "req-a")
++	if recA.Code != http.StatusOK {
++		t.Fatalf("expected req-a to succeed via request-local fallback, got status=%d body=%q", recA.Code, recA.Body.String())
++	}
++	if got := recA.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
++		t.Fatalf("expected req-a to complete on Fallback, got %q", got)
++	}
++
++	recB := issueFailoverPolicyTestRequest(p, "req-b")
++	if recB.Code != http.StatusOK {
++		t.Fatalf("expected req-b to succeed, got status=%d body=%q", recB.Code, recB.Body.String())
++	}
++	if got := recB.Header().Get(headerCCNexusEndpoint); got != "Primary" {
++		t.Fatalf("expected req-b to still start on Primary after req-a fallback, got %q", got)
++	}
++	if got := primaryHitsByRequest["req-b"]; got != 1 {
++		t.Fatalf("expected req-b to hit Primary once, got %d", got)
++		t.Fatalf("expected req-b to hit Primary once, got %d", got)
++	}
++	if got := p.GetCurrentEndpointName(); got != "Primary" {
++		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
++	}
++	if fallbackHits != 1 {
++		t.Fatalf("expected only req-a to use fallback once, got fallback hits=%d", fallbackHits)
++	}
++}
++
++func TestConcurrentRequestLocalFallbackDoesNotAffectOtherRequest(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	var mu sync.Mutex
++	primaryHitsByRequest := map[string]int{}
++	fallbackHitsByRequest := map[string]int{}
++	fallbackStarted := make(chan struct{})
++	releaseFallback := make(chan struct{})
++	var fallbackStartedOnce sync.Once
++	var releaseFallbackOnce sync.Once
++	t.Cleanup(func() {
++		releaseFallbackOnce.Do(func() { close(releaseFallback) })
++	})
++
++	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requestID := r.Header.Get(headerCCNexusRequestID)
++		mu.Lock()
++		primaryHitsByRequest[requestID]++
++		mu.Unlock()
++
++		w.Header().Set("Content-Type", "application/json")
++		if requestID == "req-a-concurrent" {
++			w.WriteHeader(http.StatusInternalServerError)
++			_, _ = w.Write([]byte(`{\"error\":{\"message\":\"Too Many Requests\"}}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{\"id\":\"resp-primary\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2},\"output\":[]}`))
++	}))
++	defer primary.Close()
++
++	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requestID := r.Header.Get(headerCCNexusRequestID)
++		mu.Lock()
++		fallbackHitsByRequest[requestID]++
++		mu.Unlock()
++
++		if requestID == "req-a-concurrent" {
++			fallbackStartedOnce.Do(func() { close(fallbackStarted) })
++			select {
++			case <-releaseFallback:
++			case <-time.After(3 * time.Second):
++				http.Error(w, "timed out waiting to release fallback response", http.StatusGatewayTimeout)
++				return
++			}
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{\"id\":\"resp-fallback\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2},\"output\":[]}`))
++	}))
++	defer fallback.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", primary.URL),
++		failoverPolicyTestEndpoint("Fallback", fallback.URL),
++	}, primary.Client())
++	p.retrySleep = func(time.Duration) {}
++
++	var recA *httptest.ResponseRecorder
++	doneA := make(chan struct{})
++	go func() {
++		defer close(doneA)
++		recA = issueFailoverPolicyTestRequest(p, "req-a-concurrent")
++	}()
++
++	select {
++	case <-fallbackStarted:
++	case <-time.After(3 * time.Second):
++		t.Fatal("timed out waiting for req-a to reach request-local fallback")
++	}
++
++	recB := issueFailoverPolicyTestRequest(p, "req-b-concurrent")
++	if recB.Code != http.StatusOK {
++		t.Fatalf("expected concurrent req-b to succeed, got status=%d body=%q", recB.Code, recB.Body.String())
++	}
++	if got := recB.Header().Get(headerCCNexusEndpoint); got != "Primary" {
++		t.Fatalf("expected concurrent req-b to remain on Primary while req-a is on Fallback, got %q", got)
++	}
++
++	releaseFallbackOnce.Do(func() { close(releaseFallback) })
++	select {
++	case <-doneA:
++	case <-time.After(3 * time.Second):
++		t.Fatal("timed out waiting for req-a to finish")
++	}
++	if recA == nil || recA.Code != http.StatusOK {
++		if recA == nil {
++			t.Fatal("expected req-a recorder, got nil")
++		}
++		t.Fatalf("expected req-a to succeed via fallback, got status=%d body=%q", recA.Code, recA.Body.String())
++	}
++	if got := recA.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
++		t.Fatalf("expected req-a to complete on Fallback, got %q", got)
++	}
++
++	mu.Lock()
++	primaryBHits := primaryHitsByRequest["req-b-concurrent"]
++	fallbackBHits := fallbackHitsByRequest["req-b-concurrent"]
++	primaryAHits := primaryHitsByRequest["req-a-concurrent"]
++	fallbackAHits := fallbackHitsByRequest["req-a-concurrent"]
++	mu.Unlock()
++	if primaryAHits != endpointSlowFailoverAttempts || fallbackAHits != 1 {
++		t.Fatalf("expected req-a to try Primary %d times then Fallback once, got primary=%d fallback=%d", endpointSlowFailoverAttempts, primaryAHits, fallbackAHits)
++	}
++	if primaryBHits != 1 || fallbackBHits != 0 {
++		t.Fatalf("expected req-b to use only Primary once, got primary=%d fallback=%d", primaryBHits, fallbackBHits)
++	}
++	if got := p.GetCurrentEndpointName(); got != "Primary" {
++		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
++	}
++
++	logs := joinedProxyLogs()
++	if !strings.Contains(logs, "request_id=req-a-concurrent") || !strings.Contains(logs, "failover_scope=request_local") {
++		t.Fatalf("expected req-a request-local failover log, got logs:\n%s", logs)
++	}
++	if strings.Contains(logs, "[SWITCH]") {
++		t.Fatalf("expected no global switch log during concurrent request-local fallback, got logs:\n%s", logs)
++	}
++}
++
++func TestRateLimitedRetryUsesBackoffBeforeSameEndpointRetry(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	primaryHits := 0
++	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		primaryHits++
++		w.Header().Set("Content-Type", "application/json")
++		if primaryHits == 1 {
++			w.WriteHeader(http.StatusInternalServerError)
++			_, _ = w.Write([]byte(`{"error":{"message":"Too Many Requests"}}`))
++			return
++		}
++		_, _ = w.Write([]byte(`{"id":"resp-primary","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer primary.Close()
++
++	p := newFailoverPolicyTestProxy([]config.Endpoint{
++		failoverPolicyTestEndpoint("Primary", primary.URL),
++	}, primary.Client())
++	var sleeps []time.Duration
++	p.retrySleep = func(d time.Duration) {
++		sleeps = append(sleeps, d)
++	}
++
++	rec := issueFailoverPolicyTestRequest(p, "req-backoff")
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected request to succeed after backoff retry, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if primaryHits != 2 {
++		t.Fatalf("expected one rate-limited attempt and one success attempt, got %d hits", primaryHits)
++	}
++	if len(sleeps) != 1 {
++		t.Fatalf("expected exactly one backoff sleep, got %d", len(sleeps))
++	}
++	if sleeps[0] != 800*time.Millisecond {
++		t.Fatalf("expected first rate-limit backoff to be 800ms, got %s", sleeps[0])
++	}
++}
++
++func issueFailoverPolicyTestRequest(p *Proxy, requestID string) *httptest.ResponseRecorder {
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set(headerCCNexusRequestID, requestID)
++	rec := httptest.NewRecorder()
++	p.handleProxy(rec, req)
++	return rec
++}
++
++func joinedProxyLogs() string {
++	logs := logger.GetLogger().GetLogs()
++	var builder strings.Builder
++	for _, entry := range logs {
++		builder.WriteString(entry.Message)
++		builder.WriteByte('\n')
++	}
++	return builder.String()
++}
+diff --git a/internal/proxy/request_observability_test.go b/internal/proxy/request_observability_test.go
+new file mode 100644
+index 0000000..009c753
+--- /dev/null
++++ b/internal/proxy/request_observability_test.go
+@@ -0,0 +1,168 @@
++package proxy
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/lich0821/ccNexus/internal/config"
++	"github.com/lich0821/ccNexus/internal/logger"
++)
++
++func TestHandleProxyAddsRequestObservabilityHeadersAndLogs(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path != "/v1/responses" {
++			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"id":"resp-test","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
++	}))
++	defer upstream.Close()
++
++	cfg := config.DefaultConfig()
++	cfg.UpdateEndpoints([]config.Endpoint{
++		{
++			Name:        "EndpointA",
++			APIUrl:      upstream.URL,
++			APIKey:      "test-key",
++			AuthMode:    config.AuthModeAPIKey,
++			Enabled:     true,
++			Transformer: "openai2",
++			Model:       "gpt-5.5",
++		},
++	})
++
++	p := &Proxy{
++		config:         cfg,
++		stats:          NewStats(&noopStatsStorage{}, "test-device"),
++		httpClient:     upstream.Client(),
++		activeRequests: make(map[string]int),
++		endpointCtx:    make(map[string]context.Context),
++		endpointCancel: make(map[string]context.CancelFunc),
++		currentIndex:   0,
++		resolver:       NewEndpointResolverWithFunc(cfg.GetEndpoints),
++	}
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
++	req.RemoteAddr = "203.0.113.7:45678"
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("X-OpenClaw-Agent", "agent-alpha")
++	req.Header.Set("X-ccNexus-Request-ID", "req-existing")
++	rec := httptest.NewRecorder()
++
++	p.handleProxy(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected upstream success, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if got := rec.Header().Get("X-ccNexus-Request-ID"); got != "req-existing" {
++		t.Fatalf("expected request id response header to preserve inbound id, got %q", got)
++	}
++	if got := rec.Header().Get("X-ccNexus-Endpoint"); got != "EndpointA" {
++		t.Fatalf("expected endpoint response header, got %q", got)
++	}
++	if got := rec.Header().Get("X-ccNexus-Attempt"); got != "1" {
++		t.Fatalf("expected attempt response header, got %q", got)
++	}
++
++	logs := logger.GetLogger().GetLogs()
++	joined := ""
++	for _, entry := range logs {
++		joined += entry.Message + "\n"
++	}
++	for _, want := range []string{
++		"request_id=req-existing",
++		"client_ip=203.0.113.7",
++		"agent=agent-alpha",
++		"endpoint=EndpointA",
++		"attempt=1",
++		"upstream_status=200",
++	} {
++		if !strings.Contains(joined, want) {
++			t.Fatalf("expected logs to contain %q; logs:\n%s", want, joined)
++		}
++	}
++}
++
++func TestHandleProxyLogsRetryReasonAndFinalAttemptHeaders(t *testing.T) {
++	logger.GetLogger().Clear()
++	logger.GetLogger().SetMinLevel(logger.DEBUG)
++
++	attempts := 0
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		attempts++
++		if attempts == 1 {
++			w.Header().Set("Content-Type", "application/json")
++			w.WriteHeader(http.StatusTooManyRequests)
++			_, _ = w.Write([]byte(`{\"error\":{\"message\":\"Too Many Requests\"}}`))
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{\"id\":\"resp-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2},\"output\":[]}`))
++	}))
++	defer upstream.Close()
++
++	cfg := config.DefaultConfig()
++	cfg.UpdateEndpoints([]config.Endpoint{
++		{
++			Name:        "EndpointA",
++			APIUrl:      upstream.URL,
++			APIKey:      "test-key",
++			AuthMode:    config.AuthModeAPIKey,
++			Enabled:     true,
++			Transformer: "openai2",
++			Model:       "gpt-5.5",
++		},
++	})
++
++	p := &Proxy{
++		config:         cfg,
++		stats:          NewStats(&noopStatsStorage{}, "test-device"),
++		httpClient:     upstream.Client(),
++		activeRequests: make(map[string]int),
++		endpointCtx:    make(map[string]context.Context),
++		endpointCancel: make(map[string]context.CancelFunc),
++		currentIndex:   0,
++		resolver:       NewEndpointResolverWithFunc(cfg.GetEndpoints),
++	}
++
++	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{\"model\":\"gpt-5.5\",\"stream\":false,\"input\":[]}`))
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("X-ccNexus-Request-ID", "req-retry")
++	rec := httptest.NewRecorder()
++
++	p.handleProxy(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("expected retry to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
++	}
++	if attempts != 2 {
++		t.Fatalf("expected exactly 2 upstream attempts, got %d", attempts)
++	}
++	if got := rec.Header().Get("X-ccNexus-Attempt"); got != "2" {
++		t.Fatalf("expected final attempt response header to be 2, got %q", got)
++	}
++
++	logs := logger.GetLogger().GetLogs()
++	joined := ""
++	for _, entry := range logs {
++		joined += entry.Message + "\n"
++	}
++	for _, want := range []string{
++		"request_id=req-retry",
++		"attempt=1",
++		"upstream_status=429",
++		"retry_reason=rate_limited",
++		"attempt=2",
++		"upstream_status=200",
++	} {
++		if !strings.Contains(joined, want) {
++			t.Fatalf("expected logs to contain %q; logs:\n%s", want, joined)
++		}
++	}
++}
+diff --git a/internal/proxy/stats.go b/internal/proxy/stats.go
+index 6f63f4b..be69611 100644
+--- a/internal/proxy/stats.go
++++ b/internal/proxy/stats.go
+@@ -65,9 +65,9 @@ type DailyRecord struct {
+ 
+ // Stats represents overall proxy statistics
+ type Stats struct {
+-	storage       StatsStorage
+-	deviceID      string
+-	mu            sync.RWMutex
++	storage  StatsStorage
++	deviceID string
++	mu       sync.RWMutex
+ 
+ 	// Save optimization
+ 	savePending   bool
+@@ -373,7 +373,6 @@ func (s *Stats) Load() error {
+ 	return nil
+ }
+ 
+-
+ // GetPeriodStats returns aggregated statistics for a time period
+ func (s *Stats) GetPeriodStats(startDate, endDate string) map[string]*DailyStats {
+ 	// Use single aggregated query instead of N+1 queries
+@@ -547,7 +546,7 @@ func getPeriodDates() (today, yesterday, weekStart, monthStart string) {
+ 	if weekday == 0 {
+ 		weekday = 7 // Adjust Sunday to 7
+ 	}
+-	weekStart = now.AddDate(0, 0, -(weekday-1)).Format("2006-01-02")
++	weekStart = now.AddDate(0, 0, -(weekday - 1)).Format("2006-01-02")
+ 
+ 	// First day of current month
+ 	monthStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Format("2006-01-02")
+diff --git a/internal/proxy/test_helpers_test.go b/internal/proxy/test_helpers_test.go
+new file mode 100644
+index 0000000..b1e49b0
+--- /dev/null
++++ b/internal/proxy/test_helpers_test.go
+@@ -0,0 +1,14 @@
++package proxy
++
++type noopStatsStorage struct{}
++
++func (noopStatsStorage) RecordDailyStat(stat interface{}) error { return nil }
++func (noopStatsStorage) GetTotalStats() (int, map[string]interface{}, error) {
++	return 0, map[string]interface{}{}, nil
++}
++func (noopStatsStorage) GetDailyStats(endpointName, startDate, endDate string) ([]interface{}, error) {
++	return nil, nil
++}
++func (noopStatsStorage) GetPeriodStatsAggregated(startDate, endDate string) (map[string]interface{}, error) {
++	return map[string]interface{}{}, nil
++}
+diff --git a/internal/proxy/utils.go b/internal/proxy/utils.go
+index d6fd454..85adce8 100644
+--- a/internal/proxy/utils.go
++++ b/internal/proxy/utils.go
+@@ -17,6 +17,11 @@ func normalizeAPIUrl(apiUrl string) string {
+ 	return apiUrl
+ }
+ 
++const (
++	endpointFastFailoverAttempts = 2
++	endpointSlowFailoverAttempts = 3
++)
++
+ // shouldRetry determines if a response should trigger a retry
+ func shouldRetry(statusCode int) bool {
+ 	return statusCode != http.StatusOK &&
+@@ -24,6 +29,67 @@ func shouldRetry(statusCode int) bool {
+ 		statusCode != http.StatusUnauthorized
+ }
+ 
++// retryReasonForHTTPStatus classifies upstream HTTP retry failures for logs and
++// endpoint rotation policy. Upstream gateways sometimes wrap rate limits inside
++// HTTP 500 bodies, so inspect the body in addition to the status code.
++func retryReasonForHTTPStatus(statusCode int, body string) string {
++	if isQuotaExhaustedHTTPFailure(statusCode, body) {
++		return "quota_exhausted"
++	}
++	if isRateLimitedHTTPFailure(statusCode, body) {
++		return "rate_limited"
++	}
++	if statusCode >= http.StatusInternalServerError {
++		return "upstream_5xx"
++	}
++	return "retryable_status"
++}
++
++func shouldRotateEndpointAfterHTTPFailure(endpointAttempts int, statusCode int, body string) bool {
++	return endpointAttempts >= failoverAttemptsForHTTPFailure(statusCode, body)
++}
++
++func failoverAttemptsForHTTPFailure(statusCode int, body string) int {
++	if isQuotaExhaustedHTTPFailure(statusCode, body) {
++		return 1
++	}
++	// HTTP upstream failures are usually provider pressure or gateway hiccups.
++	// Try them a little longer before globally rotating endpoints.
++	if statusCode > 0 {
++		return endpointSlowFailoverAttempts
++	}
++	return endpointFastFailoverAttempts
++}
++
++func isQuotaExhaustedHTTPFailure(statusCode int, body string) bool {
++	if statusCode == 0 {
++		return false
++	}
++	lower := strings.ToLower(strings.TrimSpace(body))
++	if strings.Contains(lower, "insufficient_user_quota") ||
++		strings.Contains(lower, "insufficient_quota") ||
++		strings.Contains(lower, "quota_exhausted") ||
++		strings.Contains(lower, "quota exhausted") ||
++		strings.Contains(lower, "exceeded your current quota") ||
++		strings.Contains(lower, "用户额度不足") ||
++		strings.Contains(lower, "余额不足") {
++		return true
++	}
++	return strings.Contains(lower, "剩余额度") &&
++		(strings.Contains(lower, "0.000000") || strings.Contains(lower, "￥0") || strings.Contains(lower, "$0") || strings.Contains(lower, "＄0"))
++}
++
++func isRateLimitedHTTPFailure(statusCode int, body string) bool {
++	if statusCode == http.StatusTooManyRequests {
++		return true
++	}
++	lower := strings.ToLower(strings.TrimSpace(body))
++	return strings.Contains(lower, "too many requests") ||
++		strings.Contains(lower, "rate limit") ||
++		strings.Contains(lower, "rate_limit") ||
++		strings.Contains(lower, "429")
++}
++
+ // cleanIncompleteToolCalls removes incomplete tool_use blocks from request
+ func cleanIncompleteToolCalls(bodyBytes []byte) ([]byte, error) {
+ 	var req map[string]interface{}
+diff --git a/internal/service/endpoint.go b/internal/service/endpoint.go
+index 5ba8f75..3727976 100644
+--- a/internal/service/endpoint.go
++++ b/internal/service/endpoint.go
+@@ -136,7 +136,7 @@ func (e *EndpointService) resolveEndpointAPIKey(endpoint config.Endpoint) (strin
+ }
+ 
+ // AddEndpoint adds a new endpoint
+-func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
++func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
+ 	endpoints := e.config.GetEndpoints()
+ 	for _, ep := range endpoints {
+ 		if ep.Name == name {
+@@ -162,6 +162,7 @@ func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transforme
+ 		Enabled:     true,
+ 		Transformer: transformer,
+ 		Model:       model,
++		Thinking:    thinking,
+ 		Remark:      remark,
+ 	}
+ 	config.ApplyEndpointAuthModeRules(&newEndpoint)
+@@ -227,7 +228,7 @@ func (e *EndpointService) RemoveEndpoint(index int) error {
+ }
+ 
+ // UpdateEndpoint updates an endpoint by index
+-func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
++func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
+ 	endpoints := e.config.GetEndpoints()
+ 
+ 	if index < 0 || index >= len(endpoints) {
+@@ -264,6 +265,7 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
+ 		Enabled:     enabled,
+ 		Transformer: transformer,
+ 		Model:       model,
++		Thinking:    thinking,
+ 		Remark:      remark,
+ 	}
+ 	config.ApplyEndpointAuthModeRules(&updatedEndpoint)
+diff --git a/internal/storage/adapter.go b/internal/storage/adapter.go
+index 0470654..1ef6504 100644
+--- a/internal/storage/adapter.go
++++ b/internal/storage/adapter.go
+@@ -29,6 +29,7 @@ func (a *ConfigStorageAdapter) GetEndpoints() ([]config.StorageEndpoint, error)
+ 			Enabled:     ep.Enabled,
+ 			Transformer: ep.Transformer,
+ 			Model:       ep.Model,
++			Thinking:    ep.Thinking,
+ 			Remark:      ep.Remark,
+ 			SortOrder:   ep.SortOrder,
+ 		}
+@@ -46,6 +47,7 @@ func (a *ConfigStorageAdapter) SaveEndpoint(ep *config.StorageEndpoint) error {
+ 		Enabled:     ep.Enabled,
+ 		Transformer: ep.Transformer,
+ 		Model:       ep.Model,
++		Thinking:    ep.Thinking,
+ 		Remark:      ep.Remark,
+ 		SortOrder:   ep.SortOrder,
+ 	}
+@@ -62,6 +64,7 @@ func (a *ConfigStorageAdapter) UpdateEndpoint(ep *config.StorageEndpoint) error
+ 		Enabled:     ep.Enabled,
+ 		Transformer: ep.Transformer,
+ 		Model:       ep.Model,
++		Thinking:    ep.Thinking,
+ 		Remark:      ep.Remark,
+ 		SortOrder:   ep.SortOrder,
+ 	}
+diff --git a/internal/storage/interface.go b/internal/storage/interface.go
+index e16fd93..a050026 100644
+--- a/internal/storage/interface.go
++++ b/internal/storage/interface.go
+@@ -11,6 +11,7 @@ type Endpoint struct {
+ 	Enabled     bool      `json:"enabled"`
+ 	Transformer string    `json:"transformer"`
+ 	Model       string    `json:"model"`
++	Thinking    string    `json:"thinking"`
+ 	Remark      string    `json:"remark"`
+ 	SortOrder   int       `json:"sortOrder"`
+ 	CreatedAt   time.Time `json:"createdAt"`
+diff --git a/internal/storage/sqlite.go b/internal/storage/sqlite.go
+index c5cd887..716db18 100644
+--- a/internal/storage/sqlite.go
++++ b/internal/storage/sqlite.go
+@@ -93,6 +93,7 @@ func (s *SQLiteStorage) initSchema() error {
+ 		enabled BOOLEAN DEFAULT TRUE,
+ 		transformer TEXT DEFAULT 'claude',
+ 		model TEXT,
++		thinking TEXT DEFAULT 'off',
+ 		remark TEXT,
+ 		sort_order INTEGER DEFAULT 0,
+ 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+@@ -180,6 +181,9 @@ func (s *SQLiteStorage) initSchema() error {
+ 	if err := s.migrateAuthMode(); err != nil {
+ 		return err
+ 	}
++	if err := s.migrateThinking(); err != nil {
++		return err
++	}
+ 
+ 	return nil
+ }
+@@ -226,11 +230,28 @@ func (s *SQLiteStorage) migrateAuthMode() error {
+ 	return err
+ }
+ 
++func (s *SQLiteStorage) migrateThinking() error {
++	var count int
++	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoints') WHERE name='thinking'`).Scan(&count)
++	if err != nil {
++		return err
++	}
++
++	if count == 0 {
++		if _, err := s.db.Exec(`ALTER TABLE endpoints ADD COLUMN thinking TEXT DEFAULT 'off'`); err != nil {
++			return err
++		}
++	}
++
++	_, err = s.db.Exec(`UPDATE endpoints SET thinking='off' WHERE thinking IS NULL OR thinking=''`)
++	return err
++}
++
+ func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
+ 	s.mu.RLock()
+ 	defer s.mu.RUnlock()
+ 
+-	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
++	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, thinking, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -255,8 +276,8 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
+ 
+ 	normalizeEndpointAuthMode(ep)
+ 
+-	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+-		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder)
++	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, thinking, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
++		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.Remark, ep.SortOrder)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -275,8 +296,8 @@ func (s *SQLiteStorage) UpdateEndpoint(ep *Endpoint) error {
+ 
+ 	normalizeEndpointAuthMode(ep)
+ 
+-	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
+-		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder, ep.Name)
++	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, thinking=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
++		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.Remark, ep.SortOrder, ep.Name)
+ 	return err
+ }
+ 
+@@ -746,6 +767,7 @@ func normalizeEndpointAuthMode(ep *Endpoint) {
+ 		Enabled:     ep.Enabled,
+ 		Transformer: ep.Transformer,
+ 		Model:       ep.Model,
++		Thinking:    ep.Thinking,
+ 		Remark:      ep.Remark,
+ 	}
+ 	if normalized.Transformer == "" {
+@@ -757,6 +779,7 @@ func normalizeEndpointAuthMode(ep *Endpoint) {
+ 	ep.AuthMode = normalized.AuthMode
+ 	ep.Transformer = normalized.Transformer
+ 	ep.Model = normalized.Model
++	ep.Thinking = normalized.Thinking
+ 	ep.Remark = normalized.Remark
+ }
+ 
+@@ -782,6 +805,9 @@ func compareEndpoints(local, remote Endpoint) []string {
+ 	if local.Model != remote.Model {
+ 		conflicts = append(conflicts, "model")
+ 	}
++	if config.NormalizeThinkingEffort(local.Thinking) != config.NormalizeThinkingEffort(remote.Thinking) {
++		conflicts = append(conflicts, "thinking")
++	}
+ 	if local.Remark != remote.Remark {
+ 		conflicts = append(conflicts, "remark")
+ 	}
+diff --git a/internal/transformer/cc/openai.go b/internal/transformer/cc/openai.go
+index be699f3..c629230 100644
+--- a/internal/transformer/cc/openai.go
++++ b/internal/transformer/cc/openai.go
+@@ -7,12 +7,18 @@ import (
+ 
+ // OpenAITransformer transforms Claude Code requests to OpenAI Chat format
+ type OpenAITransformer struct {
+-	model string
++	model    string
++	thinking string
+ }
+ 
+ // NewOpenAITransformer creates a new transformer
+ func NewOpenAITransformer(model string) *OpenAITransformer {
+-	return &OpenAITransformer{model: model}
++	return NewOpenAITransformerWithThinking(model, "")
++}
++
++// NewOpenAITransformerWithThinking creates a new transformer with endpoint-level reasoning effort.
++func NewOpenAITransformerWithThinking(model string, thinking string) *OpenAITransformer {
++	return &OpenAITransformer{model: model, thinking: thinking}
+ }
+ 
+ func (t *OpenAITransformer) Name() string {
+@@ -20,7 +26,7 @@ func (t *OpenAITransformer) Name() string {
+ }
+ 
+ func (t *OpenAITransformer) TransformRequest(req []byte) ([]byte, error) {
+-	return convert.ClaudeReqToOpenAI(req, t.model)
++	return convert.ClaudeReqToOpenAIWithThinking(req, t.model, t.thinking)
+ }
+ 
+ func (t *OpenAITransformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {
+diff --git a/internal/transformer/cc/openai2.go b/internal/transformer/cc/openai2.go
+index e15a5d1..428865e 100644
+--- a/internal/transformer/cc/openai2.go
++++ b/internal/transformer/cc/openai2.go
+@@ -7,12 +7,18 @@ import (
+ 
+ // OpenAI2Transformer transforms Claude Code requests to OpenAI Responses API format
+ type OpenAI2Transformer struct {
+-	model string
++	model    string
++	thinking string
+ }
+ 
+ // NewOpenAI2Transformer creates a new transformer
+ func NewOpenAI2Transformer(model string) *OpenAI2Transformer {
+-	return &OpenAI2Transformer{model: model}
++	return NewOpenAI2TransformerWithThinking(model, "")
++}
++
++// NewOpenAI2TransformerWithThinking creates a new transformer with endpoint-level reasoning effort.
++func NewOpenAI2TransformerWithThinking(model, thinking string) *OpenAI2Transformer {
++	return &OpenAI2Transformer{model: model, thinking: thinking}
+ }
+ 
+ func (t *OpenAI2Transformer) Name() string {
+@@ -20,7 +26,7 @@ func (t *OpenAI2Transformer) Name() string {
+ }
+ 
+ func (t *OpenAI2Transformer) TransformRequest(req []byte) ([]byte, error) {
+-	return convert.ClaudeReqToOpenAI2(req, t.model)
++	return convert.ClaudeReqToOpenAI2WithThinking(req, t.model, t.thinking)
+ }
+ 
+ func (t *OpenAI2Transformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {
+diff --git a/internal/transformer/convert/claude_openai.go b/internal/transformer/convert/claude_openai.go
+index 5d1c7e1..1b22456 100644
+--- a/internal/transformer/convert/claude_openai.go
++++ b/internal/transformer/convert/claude_openai.go
+@@ -9,6 +9,12 @@ import (
+ 
+ // ClaudeReqToOpenAI converts Claude request to OpenAI Chat request
+ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
++	return ClaudeReqToOpenAIWithThinking(claudeReq, model, "")
++}
++
++// ClaudeReqToOpenAIWithThinking converts Claude request to OpenAI Chat request
++// and injects endpoint-level reasoning effort when configured.
++func ClaudeReqToOpenAIWithThinking(claudeReq []byte, model string, thinking string) ([]byte, error) {
+ 	var req transformer.ClaudeRequest
+ 	if err := json.Unmarshal(claudeReq, &req); err != nil {
+ 		return nil, err
+@@ -119,6 +125,9 @@ func ClaudeReqToOpenAI(claudeReq []byte, model string) ([]byte, error) {
+ 	if req.Temperature > 0 {
+ 		openaiReq.Temperature = &req.Temperature
+ 	}
++	if thinking != "" && thinking != "off" {
++		openaiReq.Reasoning = map[string]interface{}{"effort": thinking}
++	}
+ 
+ 	// Convert tools
+ 	if len(req.Tools) > 0 {
+diff --git a/internal/transformer/convert/claude_openai2.go b/internal/transformer/convert/claude_openai2.go
+index 7303f6c..d1d3488 100644
+--- a/internal/transformer/convert/claude_openai2.go
++++ b/internal/transformer/convert/claude_openai2.go
+@@ -10,6 +10,12 @@ import (
+ 
+ // ClaudeReqToOpenAI2 converts Claude request to OpenAI Responses API request
+ func ClaudeReqToOpenAI2(claudeReq []byte, model string) ([]byte, error) {
++	return ClaudeReqToOpenAI2WithThinking(claudeReq, model, "")
++}
++
++// ClaudeReqToOpenAI2WithThinking converts Claude request to OpenAI Responses API request
++// and injects endpoint-level reasoning effort when configured.
++func ClaudeReqToOpenAI2WithThinking(claudeReq []byte, model string, thinking string) ([]byte, error) {
+ 	var req transformer.ClaudeRequest
+ 	if err := json.Unmarshal(claudeReq, &req); err != nil {
+ 		return nil, err
+@@ -19,6 +25,10 @@ func ClaudeReqToOpenAI2(claudeReq []byte, model string) ([]byte, error) {
+ 		"model":  model,
+ 		"stream": req.Stream,
+ 	}
++	thinking = strings.ToLower(strings.TrimSpace(thinking))
++	if thinking != "" && thinking != "off" {
++		openai2Req["reasoning"] = map[string]interface{}{"effort": thinking}
++	}
+ 
+ 	// Convert system to instructions
+ 	if req.System != nil {
+diff --git a/internal/transformer/convert/claude_openai2_test.go b/internal/transformer/convert/claude_openai2_test.go
+index 2d41bd1..eff7c62 100644
+--- a/internal/transformer/convert/claude_openai2_test.go
++++ b/internal/transformer/convert/claude_openai2_test.go
+@@ -217,6 +217,53 @@ func TestClaudeReqToOpenAI2PreservesToolChain(t *testing.T) {
+ 	}
+ }
+ 
++func TestClaudeReqToOpenAI2InjectsReasoningEffort(t *testing.T) {
++	claudeReq := `{
++		"model": "claude-sonnet-4-20250514",
++		"stream": true,
++		"messages": [{"role":"user","content":"test"}]
++	}`
++
++	reqBytes, err := ClaudeReqToOpenAI2WithThinking([]byte(claudeReq), "gpt-5.5", "high")
++	if err != nil {
++		t.Fatalf("ClaudeReqToOpenAI2WithThinking failed: %v", err)
++	}
++
++	var req map[string]interface{}
++	if err := json.Unmarshal(reqBytes, &req); err != nil {
++		t.Fatalf("unmarshal transformed req failed: %v", err)
++	}
++
++	reasoning, ok := req["reasoning"].(map[string]interface{})
++	if !ok {
++		t.Fatalf("expected reasoning object, got %#v", req["reasoning"])
++	}
++	if reasoning["effort"] != "high" {
++		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
++	}
++}
++
++func TestClaudeReqToOpenAI2SkipsReasoningEffortWhenOff(t *testing.T) {
++	claudeReq := `{
++		"model": "claude-sonnet-4-20250514",
++		"stream": true,
++		"messages": [{"role":"user","content":"test"}]
++	}`
++
++	reqBytes, err := ClaudeReqToOpenAI2WithThinking([]byte(claudeReq), "gpt-5.5", "off")
++	if err != nil {
++		t.Fatalf("ClaudeReqToOpenAI2WithThinking failed: %v", err)
++	}
++
++	var req map[string]interface{}
++	if err := json.Unmarshal(reqBytes, &req); err != nil {
++		t.Fatalf("unmarshal transformed req failed: %v", err)
++	}
++	if _, ok := req["reasoning"]; ok {
++		t.Fatalf("did not expect reasoning when thinking is off, got %#v", req["reasoning"])
++	}
++}
++
+ func TestOpenAI2RespToClaudeFallbackToItemID(t *testing.T) {
+ 	openai2Resp := `{
+ 		"id":"resp_1",
+diff --git a/internal/transformer/types.go b/internal/transformer/types.go
+index 45af632..19bcc14 100644
+--- a/internal/transformer/types.go
++++ b/internal/transformer/types.go
+@@ -33,16 +33,17 @@ type OpenAIMessage struct {
+ 
+ // OpenAIRequest represents an OpenAI API request
+ type OpenAIRequest struct {
+-	Model               string          `json:"model"`
+-	Messages            []OpenAIMessage `json:"messages"`
+-	MaxTokens           int             `json:"max_tokens,omitempty"` // Legacy field
+-	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+-	Temperature         *float64        `json:"temperature,omitempty"`
+-	Stream              bool            `json:"stream,omitempty"`
+-	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
+-	EnableThinking      bool            `json:"enable_thinking,omitempty"` // For models that support reasoning/thinking
+-	Tools               []OpenAITool    `json:"tools,omitempty"`
+-	ToolChoice          interface{}     `json:"tool_choice,omitempty"`
++	Model               string                 `json:"model"`
++	Messages            []OpenAIMessage        `json:"messages"`
++	MaxTokens           int                    `json:"max_tokens,omitempty"` // Legacy field
++	MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"`
++	Temperature         *float64               `json:"temperature,omitempty"`
++	Stream              bool                   `json:"stream,omitempty"`
++	StreamOptions       *StreamOptions         `json:"stream_options,omitempty"`
++	EnableThinking      bool                   `json:"enable_thinking,omitempty"` // For models that support reasoning/thinking
++	Reasoning           map[string]interface{} `json:"reasoning,omitempty"`
++	Tools               []OpenAITool           `json:"tools,omitempty"`
++	ToolChoice          interface{}            `json:"tool_choice,omitempty"`
+ }
+ 
+ // StreamOptions represents OpenAI stream options

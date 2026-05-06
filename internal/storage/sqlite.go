@@ -93,6 +93,7 @@ func (s *SQLiteStorage) initSchema() error {
 		enabled BOOLEAN DEFAULT TRUE,
 		transformer TEXT DEFAULT 'claude',
 		model TEXT,
+		thinking TEXT DEFAULT 'off',
 		remark TEXT,
 		sort_order INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -180,6 +181,9 @@ func (s *SQLiteStorage) initSchema() error {
 	if err := s.migrateAuthMode(); err != nil {
 		return err
 	}
+	if err := s.migrateThinking(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -226,11 +230,28 @@ func (s *SQLiteStorage) migrateAuthMode() error {
 	return err
 }
 
+func (s *SQLiteStorage) migrateThinking() error {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoints') WHERE name='thinking'`).Scan(&count)
+	if err != nil {
+		return err
+	}
+
+	if count == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE endpoints ADD COLUMN thinking TEXT DEFAULT 'off'`); err != nil {
+			return err
+		}
+	}
+
+	_, err = s.db.Exec(`UPDATE endpoints SET thinking='off' WHERE thinking IS NULL OR thinking=''`)
+	return err
+}
+
 func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, thinking, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -255,8 +276,8 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
 
 	normalizeEndpointAuthMode(ep)
 
-	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder)
+	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, thinking, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.Remark, ep.SortOrder)
 	if err != nil {
 		return err
 	}
@@ -275,8 +296,8 @@ func (s *SQLiteStorage) UpdateEndpoint(ep *Endpoint) error {
 
 	normalizeEndpointAuthMode(ep)
 
-	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
-		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Remark, ep.SortOrder, ep.Name)
+	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, thinking=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
+		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.Remark, ep.SortOrder, ep.Name)
 	return err
 }
 
@@ -746,6 +767,7 @@ func normalizeEndpointAuthMode(ep *Endpoint) {
 		Enabled:     ep.Enabled,
 		Transformer: ep.Transformer,
 		Model:       ep.Model,
+		Thinking:    ep.Thinking,
 		Remark:      ep.Remark,
 	}
 	if normalized.Transformer == "" {
@@ -757,6 +779,7 @@ func normalizeEndpointAuthMode(ep *Endpoint) {
 	ep.AuthMode = normalized.AuthMode
 	ep.Transformer = normalized.Transformer
 	ep.Model = normalized.Model
+	ep.Thinking = normalized.Thinking
 	ep.Remark = normalized.Remark
 }
 
@@ -781,6 +804,9 @@ func compareEndpoints(local, remote Endpoint) []string {
 	}
 	if local.Model != remote.Model {
 		conflicts = append(conflicts, "model")
+	}
+	if config.NormalizeThinkingEffort(local.Thinking) != config.NormalizeThinkingEffort(remote.Thinking) {
+		conflicts = append(conflicts, "thinking")
 	}
 	if local.Remark != remote.Remark {
 		conflicts = append(conflicts, "remark")

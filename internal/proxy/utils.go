@@ -17,11 +17,77 @@ func normalizeAPIUrl(apiUrl string) string {
 	return apiUrl
 }
 
+const (
+	endpointFastFailoverAttempts = 2
+	endpointSlowFailoverAttempts = 3
+)
+
 // shouldRetry determines if a response should trigger a retry
 func shouldRetry(statusCode int) bool {
 	return statusCode != http.StatusOK &&
 		statusCode != http.StatusBadRequest &&
 		statusCode != http.StatusUnauthorized
+}
+
+// retryReasonForHTTPStatus classifies upstream HTTP retry failures for logs and
+// endpoint rotation policy. Upstream gateways sometimes wrap rate limits inside
+// HTTP 500 bodies, so inspect the body in addition to the status code.
+func retryReasonForHTTPStatus(statusCode int, body string) string {
+	if isQuotaExhaustedHTTPFailure(statusCode, body) {
+		return "quota_exhausted"
+	}
+	if isRateLimitedHTTPFailure(statusCode, body) {
+		return "rate_limited"
+	}
+	if statusCode >= http.StatusInternalServerError {
+		return "upstream_5xx"
+	}
+	return "retryable_status"
+}
+
+func shouldRotateEndpointAfterHTTPFailure(endpointAttempts int, statusCode int, body string) bool {
+	return endpointAttempts >= failoverAttemptsForHTTPFailure(statusCode, body)
+}
+
+func failoverAttemptsForHTTPFailure(statusCode int, body string) int {
+	if isQuotaExhaustedHTTPFailure(statusCode, body) {
+		return 1
+	}
+	// HTTP upstream failures are usually provider pressure or gateway hiccups.
+	// Try them a little longer before globally rotating endpoints.
+	if statusCode > 0 {
+		return endpointSlowFailoverAttempts
+	}
+	return endpointFastFailoverAttempts
+}
+
+func isQuotaExhaustedHTTPFailure(statusCode int, body string) bool {
+	if statusCode == 0 {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(body))
+	if strings.Contains(lower, "insufficient_user_quota") ||
+		strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "quota_exhausted") ||
+		strings.Contains(lower, "quota exhausted") ||
+		strings.Contains(lower, "exceeded your current quota") ||
+		strings.Contains(lower, "用户额度不足") ||
+		strings.Contains(lower, "余额不足") {
+		return true
+	}
+	return strings.Contains(lower, "剩余额度") &&
+		(strings.Contains(lower, "0.000000") || strings.Contains(lower, "￥0") || strings.Contains(lower, "$0") || strings.Contains(lower, "＄0"))
+}
+
+func isRateLimitedHTTPFailure(statusCode int, body string) bool {
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(body))
+	return strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "rate_limit") ||
+		strings.Contains(lower, "429")
 }
 
 // cleanIncompleteToolCalls removes incomplete tool_use blocks from request

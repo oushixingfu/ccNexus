@@ -60,12 +60,12 @@ func prepareCCTransformer(endpoint config.Endpoint, endpointTransformer string) 
 		if endpoint.Model == "" {
 			return nil, fmt.Errorf("OpenAI transformer requires model field")
 		}
-		return cc.NewOpenAITransformer(endpoint.Model), nil
+		return cc.NewOpenAITransformerWithThinking(endpoint.Model, endpoint.Thinking), nil
 	case "openai2":
 		if endpoint.Model == "" {
 			return nil, fmt.Errorf("OpenAI2 transformer requires model field")
 		}
-		return cc.NewOpenAI2Transformer(endpoint.Model), nil
+		return cc.NewOpenAI2TransformerWithThinking(endpoint.Model, endpoint.Thinking), nil
 	case "gemini":
 		if endpoint.Model == "" {
 			return nil, fmt.Errorf("Gemini transformer requires model field")

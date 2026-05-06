@@ -10,6 +10,12 @@ import (
 
 // ClaudeReqToOpenAI2 converts Claude request to OpenAI Responses API request
 func ClaudeReqToOpenAI2(claudeReq []byte, model string) ([]byte, error) {
+	return ClaudeReqToOpenAI2WithThinking(claudeReq, model, "")
+}
+
+// ClaudeReqToOpenAI2WithThinking converts Claude request to OpenAI Responses API request
+// and injects endpoint-level reasoning effort when configured.
+func ClaudeReqToOpenAI2WithThinking(claudeReq []byte, model string, thinking string) ([]byte, error) {
 	var req transformer.ClaudeRequest
 	if err := json.Unmarshal(claudeReq, &req); err != nil {
 		return nil, err
@@ -18,6 +24,10 @@ func ClaudeReqToOpenAI2(claudeReq []byte, model string) ([]byte, error) {
 	openai2Req := map[string]interface{}{
 		"model":  model,
 		"stream": req.Stream,
+	}
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
+	if thinking != "" && thinking != "off" {
+		openai2Req["reasoning"] = map[string]interface{}{"effort": thinking}
 	}
 
 	// Convert system to instructions

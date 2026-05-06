@@ -29,6 +29,7 @@ func (a *ConfigStorageAdapter) GetEndpoints() ([]config.StorageEndpoint, error) 
 			Enabled:     ep.Enabled,
 			Transformer: ep.Transformer,
 			Model:       ep.Model,
+			Thinking:    ep.Thinking,
 			Remark:      ep.Remark,
 			SortOrder:   ep.SortOrder,
 		}
@@ -46,6 +47,7 @@ func (a *ConfigStorageAdapter) SaveEndpoint(ep *config.StorageEndpoint) error {
 		Enabled:     ep.Enabled,
 		Transformer: ep.Transformer,
 		Model:       ep.Model,
+		Thinking:    ep.Thinking,
 		Remark:      ep.Remark,
 		SortOrder:   ep.SortOrder,
 	}
@@ -62,6 +64,7 @@ func (a *ConfigStorageAdapter) UpdateEndpoint(ep *config.StorageEndpoint) error 
 		Enabled:     ep.Enabled,
 		Transformer: ep.Transformer,
 		Model:       ep.Model,
+		Thinking:    ep.Thinking,
 		Remark:      ep.Remark,
 		SortOrder:   ep.SortOrder,
 	}

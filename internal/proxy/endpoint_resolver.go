@@ -100,8 +100,9 @@ func (r *EndpointResolver) parseEndpointFromHeader(req *http.Request) string {
 
 // parseEndpointFromModel 从模型名解析端点（支持 @endpoint 格式）
 // 格式：
-//   @endpoint-name/model-name → 返回 (endpoint-name, model-name)
-//   @endpoint-name → 返回 (endpoint-name, "")
+//
+//	@endpoint-name/model-name → 返回 (endpoint-name, model-name)
+//	@endpoint-name → 返回 (endpoint-name, "")
 func (r *EndpointResolver) parseEndpointFromModel(model string) (string, string) {
 	model = strings.TrimSpace(model)
 	if !strings.HasPrefix(model, "@") {

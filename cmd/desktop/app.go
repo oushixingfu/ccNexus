@@ -397,12 +397,12 @@ func (a *App) GetStatsTrendByPeriod(period string) string {
 
 // ========== Endpoint Bindings ==========
 
-func (a *App) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
-	return a.endpoint.AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, remark)
+func (a *App) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
+	return a.endpoint.AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking, remark)
 }
 func (a *App) RemoveEndpoint(index int) error { return a.endpoint.RemoveEndpoint(index) }
-func (a *App) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, remark string) error {
-	return a.endpoint.UpdateEndpoint(index, name, apiUrl, apiKey, authMode, transformer, model, remark)
+func (a *App) UpdateEndpoint(index int, name, apiUrl, apiKey, authMode, transformer, model, thinking, remark string) error {
+	return a.endpoint.UpdateEndpoint(index, name, apiUrl, apiKey, authMode, transformer, model, thinking, remark)
 }
 func (a *App) ToggleEndpoint(index int, enabled bool) error {
 	return a.endpoint.ToggleEndpoint(index, enabled)

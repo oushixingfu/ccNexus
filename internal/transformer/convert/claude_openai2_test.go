@@ -217,6 +217,53 @@ func TestClaudeReqToOpenAI2PreservesToolChain(t *testing.T) {
 	}
 }
 
+func TestClaudeReqToOpenAI2InjectsReasoningEffort(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"stream": true,
+		"messages": [{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2WithThinking([]byte(claudeReq), "gpt-5.5", "high")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2WithThinking failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	reasoning, ok := req["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoning object, got %#v", req["reasoning"])
+	}
+	if reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
+	}
+}
+
+func TestClaudeReqToOpenAI2SkipsReasoningEffortWhenOff(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"stream": true,
+		"messages": [{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2WithThinking([]byte(claudeReq), "gpt-5.5", "off")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2WithThinking failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+	if _, ok := req["reasoning"]; ok {
+		t.Fatalf("did not expect reasoning when thinking is off, got %#v", req["reasoning"])
+	}
+}
+
 func TestOpenAI2RespToClaudeFallbackToItemID(t *testing.T) {
 	openai2Resp := `{
 		"id":"resp_1",

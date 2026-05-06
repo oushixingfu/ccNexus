@@ -133,10 +133,10 @@ func (p *Proxy) fetchModelsFromEndpoint(ep config.Endpoint) ([]ModelInfo, error)
 	// Parse response
 	var result struct {
 		Data []struct {
-			ID         string `json:"id"`
-			Object     string `json:"object"`
-			Created    int64  `json:"created"`
-			OwnedBy    string `json:"owned_by"`
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			Created int64  `json:"created"`
+			OwnedBy string `json:"owned_by"`
 		} `json:"data"`
 	}
 
@@ -246,8 +246,8 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
 		// Try to fetch from endpoint's /v1/models API
 		models, err = p.fetchModelsFromEndpoint(ep)
 		if err != nil {
-		// If fetch fails, use default models for this endpoint
-		logger.Debug("Failed to fetch models from %s: %v", ep.Name, err)
+			// If fetch fails, use default models for this endpoint
+			logger.Debug("Failed to fetch models from %s: %v", ep.Name, err)
 			models = p.getDefaultModels(ep)
 		} else {
 			allFailed = false
@@ -274,8 +274,8 @@ func (p *Proxy) writeModelsResponse(w http.ResponseWriter, models []ModelInfo) {
 	w.WriteHeader(http.StatusOK)
 
 	response := struct {
-		Object string       `json:"object"`
-		Data   []ModelInfo  `json:"data"`
+		Object string      `json:"object"`
+		Data   []ModelInfo `json:"data"`
 	}{
 		Object: "list",
 		Data:   models,

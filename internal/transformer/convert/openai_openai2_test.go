@@ -36,6 +36,140 @@ func TestOpenAIReqToOpenAI2DefaultsToolChoiceAutoWhenToolsPresent(t *testing.T) 
 	}
 }
 
+func TestOpenAIReqToOpenAI2PreservesReasoningEffort(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"reasoning_effort":"high",
+		"messages":[{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	reasoning, ok := req["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoning object, got %#v", req["reasoning"])
+	}
+	if reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
+	}
+}
+
+func TestOpenAIReqToOpenAI2ConvertsToolConversation(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"messages":[
+			{"role":"user","content":"lookup"},
+			{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"symbol\":\"002714\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"牧原股份基本面数据"}
+		]
+	}`
+
+	reqBytes, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	input := req["input"].([]interface{})
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d: %#v", len(input), input)
+	}
+
+	functionCall := input[1].(map[string]interface{})
+	if functionCall["type"] != "function_call" {
+		t.Fatalf("expected function_call item, got %#v", functionCall)
+	}
+	if functionCall["call_id"] != "call_1" {
+		t.Fatalf("expected call_id=call_1, got %#v", functionCall["call_id"])
+	}
+
+	toolOutput := input[2].(map[string]interface{})
+	if toolOutput["type"] != "function_call_output" {
+		t.Fatalf("expected function_call_output item, got %#v", toolOutput)
+	}
+	if _, ok := toolOutput["role"]; ok {
+		t.Fatalf("did not expect role on function_call_output, got %#v", toolOutput)
+	}
+	if toolOutput["output"] != "牧原股份基本面数据" {
+		t.Fatalf("expected tool output text, got %#v", toolOutput["output"])
+	}
+}
+
+func TestNormalizeOpenAI2RequestForUpstreamConvertsToolRoleInput(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"lookup"}]},
+			{"type":"message","role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"symbol\":\"002714\"}"}}]},
+			{"type":"message","role":"tool","tool_call_id":"call_1","content":"牧原股份基本面数据"}
+		]
+	}`
+
+	reqBytes, err := NormalizeOpenAI2RequestForUpstream([]byte(openai2Req))
+	if err != nil {
+		t.Fatalf("NormalizeOpenAI2RequestForUpstream failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal normalized req failed: %v", err)
+	}
+
+	input := req["input"].([]interface{})
+	for _, rawItem := range input {
+		item := rawItem.(map[string]interface{})
+		if item["role"] == "tool" {
+			t.Fatalf("did not expect tool role after normalization: %#v", item)
+		}
+	}
+
+	functionCall := input[1].(map[string]interface{})
+	if functionCall["type"] != "function_call" {
+		t.Fatalf("expected assistant tool_calls to become function_call, got %#v", functionCall)
+	}
+	toolOutput := input[2].(map[string]interface{})
+	if toolOutput["type"] != "function_call_output" || toolOutput["call_id"] != "call_1" {
+		t.Fatalf("expected function_call_output with call_id, got %#v", toolOutput)
+	}
+}
+
+func TestOpenAI2ReqToOpenAIPreservesReasoningEffort(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"reasoning":{"effort":"medium"},
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"test"}]}]
+	}`
+
+	reqBytes, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+	if req["reasoning_effort"] != "medium" {
+		t.Fatalf("expected reasoning_effort=medium, got %#v", req["reasoning_effort"])
+	}
+}
+
 func TestOpenAI2RespToOpenAIPreservesTotalTokens(t *testing.T) {
 	openai2Resp := `{
 		"id":"resp_123",

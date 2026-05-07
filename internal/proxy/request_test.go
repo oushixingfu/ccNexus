@@ -151,6 +151,52 @@ func TestForceStreamInPayloadAddsChatUsageOptions(t *testing.T) {
 	}
 }
 
+func TestInjectEndpointThinkingInPayloadAddsResponsesReasoning(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","stream":true,"input":[]}`)
+	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "High")
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	reasoning, ok := payload["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoning object, got %#v", payload["reasoning"])
+	}
+	if reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
+	}
+}
+
+func TestInjectEndpointThinkingInPayloadAddsChatReasoningEffort(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	out := injectEndpointThinkingInPayload(raw, "cx_chat_openai", "xhigh")
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if payload["reasoning_effort"] != "xhigh" {
+		t.Fatalf("expected reasoning_effort=xhigh, got %#v", payload["reasoning_effort"])
+	}
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("did not expect responses reasoning on chat payload, got %#v", payload["reasoning"])
+	}
+}
+
+func TestInjectEndpointThinkingInPayloadSkipsOff(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","stream":true,"input":[]}`)
+	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "off")
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("did not expect reasoning when thinking is off, got %#v", payload["reasoning"])
+	}
+}
+
 func TestShouldHandleAsStreamingResponseForCodexWithoutContentType(t *testing.T) {
 	endpoint := config.Endpoint{
 		Name:        "TokenPool",

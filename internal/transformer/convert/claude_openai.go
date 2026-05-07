@@ -125,6 +125,7 @@ func ClaudeReqToOpenAIWithThinking(claudeReq []byte, model string, thinking stri
 	if req.Temperature > 0 {
 		openaiReq.Temperature = &req.Temperature
 	}
+	thinking = strings.ToLower(strings.TrimSpace(thinking))
 	if thinking != "" && thinking != "off" {
 		openaiReq.Reasoning = map[string]interface{}{"effort": thinking}
 	}

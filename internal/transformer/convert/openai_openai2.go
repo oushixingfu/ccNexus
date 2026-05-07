@@ -19,29 +19,30 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		"model":  model,
 		"stream": req.Stream,
 	}
+	if req.Reasoning != nil {
+		openai2Req["reasoning"] = req.Reasoning
+	} else if effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort)); effort != "" {
+		openai2Req["reasoning"] = map[string]interface{}{"effort": effort}
+	}
 
 	var input []map[string]interface{}
 	for _, msg := range req.Messages {
-		if msg.Role == "system" {
+		role := strings.ToLower(strings.TrimSpace(msg.Role))
+		if role == "system" {
 			if content, ok := msg.Content.(string); ok {
 				openai2Req["instructions"] = content
 			}
 			continue
 		}
-
-		item := map[string]interface{}{"type": "message", "role": msg.Role}
-		var contentParts []map[string]interface{}
-
-		switch content := msg.Content.(type) {
-		case string:
-			textType := "input_text"
-			if msg.Role == "assistant" {
-				textType = "output_text"
-			}
-			contentParts = append(contentParts, map[string]interface{}{"type": textType, "text": content})
+		if role == "tool" {
+			input = append(input, openAIToolMessageToOpenAI2Output(msg))
+			continue
 		}
-		item["content"] = contentParts
-		input = append(input, item)
+
+		if item, ok := openAIMessageToOpenAI2Message(msg, role); ok {
+			input = append(input, item)
+		}
+		input = append(input, openAIToolCallsToOpenAI2Items(msg.ToolCalls)...)
 	}
 	openai2Req["input"] = input
 	// TODO: max_output_tokens is standard OpenAI Responses API param but some
@@ -72,6 +73,267 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 	}
 
 	return json.Marshal(openai2Req)
+}
+
+// NormalizeOpenAI2RequestForUpstream converts Chat-style tool messages that some
+// clients put into Responses input into native Responses function output items.
+func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
+	var body map[string]interface{}
+	if err := json.Unmarshal(openai2Req, &body); err != nil {
+		return nil, err
+	}
+
+	rawInput, ok := body["input"].([]interface{})
+	if !ok {
+		return openai2Req, nil
+	}
+
+	normalizedInput, changed := normalizeOpenAI2InputForUpstream(rawInput)
+	if !changed {
+		return openai2Req, nil
+	}
+
+	body["input"] = normalizedInput
+	return json.Marshal(body)
+}
+
+func normalizeOpenAI2InputForUpstream(input []interface{}) ([]interface{}, bool) {
+	normalized := make([]interface{}, 0, len(input))
+	changed := false
+
+	for _, item := range input {
+		itemMap, ok := item.(map[string]interface{})
+		if !ok {
+			normalized = append(normalized, item)
+			continue
+		}
+
+		role := strings.ToLower(strings.TrimSpace(stringFromMap(itemMap, "role")))
+		itemType := strings.ToLower(strings.TrimSpace(stringFromMap(itemMap, "type")))
+
+		if role == "tool" {
+			normalized = append(normalized, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": firstStringFromMap(itemMap, "call_id", "tool_call_id", "id"),
+				"output":  stringifyOpenAIMessageContent(firstNonNilFromMap(itemMap, "output", "content")),
+			})
+			changed = true
+			continue
+		}
+
+		if role == "assistant" {
+			if toolCalls, ok := itemMap["tool_calls"].([]interface{}); ok && len(toolCalls) > 0 {
+				message := cloneMapWithoutKeys(itemMap, "tool_calls")
+				if itemType == "" {
+					message["type"] = "message"
+				}
+				if hasMeaningfulOpenAI2MessageContent(message["content"]) {
+					normalized = append(normalized, message)
+				}
+				for _, toolCallItem := range genericToolCallsToOpenAI2Items(toolCalls) {
+					normalized = append(normalized, toolCallItem)
+				}
+				changed = true
+				continue
+			}
+		}
+
+		if itemType == "" && role != "" {
+			message := cloneMapWithoutKeys(itemMap)
+			message["type"] = "message"
+			normalized = append(normalized, message)
+			changed = true
+			continue
+		}
+
+		normalized = append(normalized, item)
+	}
+
+	return normalized, changed
+}
+
+func openAIMessageToOpenAI2Message(msg transformer.OpenAIMessage, role string) (map[string]interface{}, bool) {
+	item := map[string]interface{}{"type": "message", "role": role}
+	contentParts := openAIContentToOpenAI2Parts(msg.Content, role)
+	if len(msg.ToolCalls) > 0 && !hasMeaningfulOpenAI2ContentParts(contentParts) {
+		return nil, false
+	}
+	item["content"] = contentParts
+	return item, true
+}
+
+func openAIContentToOpenAI2Parts(content interface{}, role string) []map[string]interface{} {
+	textType := "input_text"
+	if role == "assistant" {
+		textType = "output_text"
+	}
+
+	switch value := content.(type) {
+	case string:
+		return []map[string]interface{}{{"type": textType, "text": value}}
+	case []interface{}:
+		parts := make([]map[string]interface{}, 0, len(value))
+		for _, rawPart := range value {
+			partMap, ok := rawPart.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			partType, _ := partMap["type"].(string)
+			text, _ := partMap["text"].(string)
+			switch partType {
+			case "text", "input_text", "output_text":
+				parts = append(parts, map[string]interface{}{"type": textType, "text": text})
+			}
+		}
+		return parts
+	case nil:
+		return nil
+	default:
+		return []map[string]interface{}{{"type": textType, "text": stringifyOpenAIMessageContent(value)}}
+	}
+}
+
+func openAIToolMessageToOpenAI2Output(msg transformer.OpenAIMessage) map[string]interface{} {
+	return map[string]interface{}{
+		"type":    "function_call_output",
+		"call_id": strings.TrimSpace(msg.ToolCallID),
+		"output":  stringifyOpenAIMessageContent(msg.Content),
+	}
+}
+
+func openAIToolCallsToOpenAI2Items(toolCalls []transformer.OpenAIToolCall) []map[string]interface{} {
+	items := make([]map[string]interface{}, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		if strings.TrimSpace(toolCall.ID) == "" && strings.TrimSpace(toolCall.Function.Name) == "" {
+			continue
+		}
+		items = append(items, map[string]interface{}{
+			"type":      "function_call",
+			"call_id":   strings.TrimSpace(toolCall.ID),
+			"name":      strings.TrimSpace(toolCall.Function.Name),
+			"arguments": toolCall.Function.Arguments,
+		})
+	}
+	return items
+}
+
+func genericToolCallsToOpenAI2Items(toolCalls []interface{}) []interface{} {
+	items := make([]interface{}, 0, len(toolCalls))
+	for _, rawToolCall := range toolCalls {
+		toolCall, ok := rawToolCall.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		function, _ := toolCall["function"].(map[string]interface{})
+		items = append(items, map[string]interface{}{
+			"type":      "function_call",
+			"call_id":   firstStringFromMap(toolCall, "call_id", "id"),
+			"name":      stringFromMap(function, "name"),
+			"arguments": stringFromMap(function, "arguments"),
+		})
+	}
+	return items
+}
+
+func stringifyOpenAIMessageContent(content interface{}) string {
+	switch value := content.(type) {
+	case nil:
+		return ""
+	case string:
+		return value
+	case []interface{}:
+		var text strings.Builder
+		for _, rawPart := range value {
+			partMap, ok := rawPart.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if partText, ok := partMap["text"].(string); ok {
+				text.WriteString(partText)
+			}
+		}
+		if text.Len() > 0 {
+			return text.String()
+		}
+	}
+
+	data, err := json.Marshal(content)
+	if err != nil {
+		return fmt.Sprint(content)
+	}
+	return string(data)
+}
+
+func hasMeaningfulOpenAI2MessageContent(content interface{}) bool {
+	switch value := content.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(value) != ""
+	case []interface{}:
+		for _, rawPart := range value {
+			partMap, ok := rawPart.(map[string]interface{})
+			if !ok {
+				return true
+			}
+			if strings.TrimSpace(stringFromMap(partMap, "text")) != "" {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+func hasMeaningfulOpenAI2ContentParts(parts []map[string]interface{}) bool {
+	for _, part := range parts {
+		if strings.TrimSpace(stringFromMap(part, "text")) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneMapWithoutKeys(src map[string]interface{}, keys ...string) map[string]interface{} {
+	dst := make(map[string]interface{}, len(src))
+	skip := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		skip[key] = true
+	}
+	for key, value := range src {
+		if skip[key] {
+			continue
+		}
+		dst[key] = value
+	}
+	return dst
+}
+
+func firstNonNilFromMap(values map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := values[key]; ok && value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstStringFromMap(values map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(stringFromMap(values, key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringFromMap(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return value
 }
 
 // OpenAI2ReqToOpenAI converts OpenAI Responses request to OpenAI Chat request
@@ -146,6 +408,11 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 		Model:    model,
 		Messages: messages,
 		Stream:   req.Stream,
+	}
+	if req.Reasoning != nil {
+		if effort, ok := req.Reasoning["effort"].(string); ok {
+			openaiReq.ReasoningEffort = strings.ToLower(strings.TrimSpace(effort))
+		}
 	}
 
 	if req.MaxOutputTokens > 0 {

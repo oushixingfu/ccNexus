@@ -374,6 +374,55 @@ func forceStreamInPayload(payload []byte) []byte {
 	return updated
 }
 
+func injectEndpointThinkingInPayload(payload []byte, transformerName string, thinking string) []byte {
+	effort := normalizeEndpointThinking(thinking)
+	if effort == "" {
+		return payload
+	}
+
+	trimmed := strings.TrimSpace(string(payload))
+	if trimmed == "" || strings.HasPrefix(trimmed, "[") {
+		return payload
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return payload
+	}
+	if body == nil {
+		return payload
+	}
+
+	name := strings.ToLower(strings.TrimSpace(transformerName))
+	switch {
+	case strings.Contains(name, "openai2"):
+		reasoning, _ := body["reasoning"].(map[string]interface{})
+		if reasoning == nil {
+			reasoning = make(map[string]interface{})
+		}
+		reasoning["effort"] = effort
+		body["reasoning"] = reasoning
+	case strings.Contains(name, "openai"):
+		body["reasoning_effort"] = effort
+	default:
+		return payload
+	}
+
+	updated, err := json.Marshal(body)
+	if err != nil {
+		return payload
+	}
+	return updated
+}
+
+func normalizeEndpointThinking(thinking string) string {
+	effort := strings.ToLower(strings.TrimSpace(thinking))
+	if effort == "" || effort == "off" {
+		return ""
+	}
+	return effort
+}
+
 func overrideModelInPayload(payload []byte, model string) []byte {
 	if strings.TrimSpace(model) == "" {
 		return payload

@@ -2,6 +2,7 @@ package responses
 
 import (
 	"github.com/lich0821/ccNexus/internal/transformer"
+	"github.com/lich0821/ccNexus/internal/transformer/convert"
 )
 
 // OpenAI2Transformer is a passthrough transformer for Codex Responses → OpenAI Responses
@@ -19,7 +20,7 @@ func (t *OpenAI2Transformer) Name() string {
 }
 
 func (t *OpenAI2Transformer) TransformRequest(req []byte) ([]byte, error) {
-	return req, nil
+	return convert.NormalizeOpenAI2RequestForUpstream(req)
 }
 
 func (t *OpenAI2Transformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {

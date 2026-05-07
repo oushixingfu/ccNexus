@@ -543,6 +543,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			transformedBody = forceStreamInPayload(transformedBody)
 			logger.DebugLog("[%s] ForceStream enabled: forcing upstream stream=true for non-stream client", endpoint.Name)
 		}
+		if clientFormat != ClientFormatClaude {
+			transformedBody = injectEndpointThinkingInPayload(transformedBody, transformerName, endpoint.Thinking)
+		}
 
 		// 处理模型名称：优先使用模型覆盖值，然后是请求中的模型，最后是端点配置的模型
 		modelName := strings.TrimSpace(streamReq.Model)

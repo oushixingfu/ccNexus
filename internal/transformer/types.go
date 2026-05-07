@@ -42,6 +42,7 @@ type OpenAIRequest struct {
 	StreamOptions       *StreamOptions         `json:"stream_options,omitempty"`
 	EnableThinking      bool                   `json:"enable_thinking,omitempty"` // For models that support reasoning/thinking
 	Reasoning           map[string]interface{} `json:"reasoning,omitempty"`
+	ReasoningEffort     string                 `json:"reasoning_effort,omitempty"`
 	Tools               []OpenAITool           `json:"tools,omitempty"`
 	ToolChoice          interface{}            `json:"tool_choice,omitempty"`
 }
@@ -355,14 +356,15 @@ type OpenAI2Tool struct {
 
 // OpenAI2Request represents an OpenAI Responses API request
 type OpenAI2Request struct {
-	Model           string        `json:"model"`
-	Input           interface{}   `json:"input"`                  // string or []OpenAI2InputItem
-	Instructions    string        `json:"instructions,omitempty"` // system prompt
-	Tools           []OpenAI2Tool `json:"tools,omitempty"`
-	ToolChoice      interface{}   `json:"tool_choice,omitempty"`
-	Stream          bool          `json:"stream,omitempty"`
-	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
-	Temperature     *float64      `json:"temperature,omitempty"`
+	Model           string                 `json:"model"`
+	Input           interface{}            `json:"input"`                  // string or []OpenAI2InputItem
+	Instructions    string                 `json:"instructions,omitempty"` // system prompt
+	Tools           []OpenAI2Tool          `json:"tools,omitempty"`
+	ToolChoice      interface{}            `json:"tool_choice,omitempty"`
+	Reasoning       map[string]interface{} `json:"reasoning,omitempty"`
+	Stream          bool                   `json:"stream,omitempty"`
+	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
+	Temperature     *float64               `json:"temperature,omitempty"`
 }
 
 // OpenAI2OutputItem represents an output item in Responses API response

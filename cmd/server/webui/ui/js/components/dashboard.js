@@ -115,25 +115,45 @@ class Dashboard {
                     <thead>
                         <tr>
                             <th>${t('common.name')}</th>
+                            <th>${t('dashboard.api')}</th>
                             <th>${t('endpoints.transformer')}</th>
-                            <th>${t('common.status')}</th>
+                            <th>${t('dashboard.availability')}</th>
                         </tr>
                     </thead>
                     <tbody>
                         ${enabledEndpoints.map(ep => `
                             <tr>
                                 <td>${this.escapeHtml(ep.name)}</td>
+                                <td><code style="font-size: 12px;">${this.escapeHtml(ep.apiUrl)}</code></td>
                                 <td>${this.escapeHtml(ep.transformer)}</td>
-                                <td>
-                                    <span class="status-indicator online"></span>
-                                    <span class="badge badge-success">${t('common.active')}</span>
-                                </td>
+                                <td>${this.renderEndpointAvailability(ep.name)}</td>
                             </tr>
                         `).join('')}
                     </tbody>
                 </table>
             </div>
         `;
+    }
+
+    renderEndpointAvailability(endpointName) {
+        const testStatus = this.getEndpointTestStatus(endpointName);
+
+        if (testStatus === true) {
+            return `<span class="badge badge-success">${t('endpoints.available')}</span>`;
+        }
+        if (testStatus === false) {
+            return `<span class="badge badge-danger">${t('endpoints.unavailable')}</span>`;
+        }
+        return `<span class="badge badge-warning">${t('endpoints.notTested')}</span>`;
+    }
+
+    getEndpointTestStatus(endpointName) {
+        try {
+            const statusMap = JSON.parse(localStorage.getItem('ccNexus_endpointTestStatus') || '{}');
+            return statusMap[endpointName];
+        } catch {
+            return undefined;
+        }
     }
 
     renderChart(dailyStats) {

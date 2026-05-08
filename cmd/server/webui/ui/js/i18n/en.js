@@ -48,6 +48,8 @@ export default {
         inputTokens: 'Input Tokens',
         outputTokens: 'Output Tokens',
         activeEndpoints: 'Active Endpoints',
+        api: 'API',
+        availability: 'Availability',
         recentActivity: 'Recent Activity',
         requests: 'Requests',
         noEndpoints: 'No endpoints configured',

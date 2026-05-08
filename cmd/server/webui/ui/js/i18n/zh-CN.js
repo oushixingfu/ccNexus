@@ -48,6 +48,8 @@ export default {
         inputTokens: '输入令牌',
         outputTokens: '输出令牌',
         activeEndpoints: '活动端点',
+        api: 'API',
+        availability: '可用性',
         recentActivity: '最近活动',
         requests: '请求数',
         noEndpoints: '未配置端点',

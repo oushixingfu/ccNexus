@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,8 +18,28 @@ import (
 	"github.com/lich0821/ccNexus/internal/transformer"
 )
 
+const (
+	streamFinishCompleted             = "completed"
+	streamFinishClientCanceled        = "client_canceled"
+	streamFinishUpstreamStreamError   = "upstream_stream_error"
+	streamFinishDownstreamWriteFailed = "downstream_write_failed"
+	streamFinishTransformFailed       = "transform_failed"
+)
+
+type streamResponseResult struct {
+	InputTokens  int
+	OutputTokens int
+	OutputText   string
+	Completed    bool
+	WroteData    bool
+	Reason       string
+	Err          error
+}
+
 // handleStreamingResponse processes streaming SSE responses
-func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) (int, int, string) {
+func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64) streamResponseResult {
+	result := streamResponseResult{}
+
 	// Copy response headers except Content-Length and Content-Encoding
 	for key, values := range resp.Header {
 		if key == "Content-Length" || key == "Content-Encoding" {
@@ -37,7 +58,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	if !ok {
 		logger.Error("[%s] ResponseWriter does not support flushing", endpoint.Name)
 		resp.Body.Close()
-		return 0, 0, ""
+		result.Reason = streamFinishDownstreamWriteFailed
+		result.Err = fmt.Errorf("response writer does not support flushing")
+		return result
 	}
 
 	// Handle gzip-encoded response body
@@ -47,7 +70,9 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 		if err != nil {
 			logger.Error("[%s] Failed to create gzip reader: %v", endpoint.Name, err)
 			resp.Body.Close()
-			return 0, 0, ""
+			result.Reason = streamFinishUpstreamStreamError
+			result.Err = err
+			return result
 		}
 		defer gzipReader.Close()
 		reader = gzipReader
@@ -82,14 +107,10 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 	for scanner.Scan() && !streamDone {
 		line := scanner.Text()
 
-		if !p.isCurrentEndpoint(endpoint.Name) {
-			logger.Warn("[%s] Endpoint switched during streaming, terminating stream gracefully", endpoint.Name)
-			streamDone = true
-			break
-		}
-
 		if strings.Contains(line, "data: [DONE]") {
 			streamDone = true
+			result.Completed = true
+			result.Reason = streamFinishCompleted
 
 			// Token Usage Fallback: Inject message_delta with estimated output_tokens before [DONE]
 			if outputTokens == 0 && outputText.Len() > 0 {
@@ -104,7 +125,13 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				// Inject message_delta event with usage
 				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
 				if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
+					result.WroteData = true
 					flusher.Flush()
+				} else {
+					result.Completed = false
+					result.Reason = streamFinishDownstreamWriteFailed
+					result.Err = writeErr
+					break
 				}
 			}
 
@@ -115,8 +142,18 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
-				w.Write(transformedEvent)
+				if _, writeErr := w.Write(transformedEvent); writeErr != nil {
+					result.Completed = false
+					result.Reason = streamFinishDownstreamWriteFailed
+					result.Err = writeErr
+					break
+				}
+				result.WroteData = true
 				flusher.Flush()
+			} else if err != nil {
+				result.Completed = false
+				result.Reason = streamFinishTransformFailed
+				result.Err = err
 			}
 			break
 		}
@@ -148,13 +185,22 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				// Inject message_delta event with usage before message_stop
 				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
 				if _, writeErr := w.Write([]byte(deltaEvent)); writeErr == nil {
+					result.WroteData = true
 					flusher.Flush()
+				} else {
+					result.Reason = streamFinishDownstreamWriteFailed
+					result.Err = writeErr
+					streamDone = true
+					break
 				}
 			}
 
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err != nil {
 				logger.Error("[%s] Failed to transform SSE event: %v", endpoint.Name, err)
+				result.Reason = streamFinishTransformFailed
+				result.Err = err
+				streamDone = true
 			} else if len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount, string(transformedEvent))
 
@@ -165,12 +211,16 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 					// Client disconnected (broken pipe) is normal for cancelled requests
 					if strings.Contains(writeErr.Error(), "broken pipe") || strings.Contains(writeErr.Error(), "connection reset") {
 						logger.Debug("[%s] Client disconnected: %v", endpoint.Name, writeErr)
+						result.Reason = streamFinishClientCanceled
 					} else {
 						logger.Error("[%s] Failed to write transformed event: %v", endpoint.Name, writeErr)
+						result.Reason = streamFinishDownstreamWriteFailed
 					}
+					result.Err = writeErr
 					streamDone = true
 					break
 				}
+				result.WroteData = true
 				flusher.Flush()
 			}
 			buffer.Reset()
@@ -179,8 +229,12 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 
 	if err := scanner.Err(); err != nil {
 		errMsg := err.Error()
-		// Check if it's an HTTP/2 stream error
-		if strings.Contains(errMsg, "stream error") || strings.Contains(errMsg, "INTERNAL_ERROR") {
+		result.Err = err
+		if isClientCanceled(ctx, err) {
+			result.Reason = streamFinishClientCanceled
+			logger.Debug("[%s] Streaming canceled by client: %v", endpoint.Name, err)
+		} else if strings.Contains(errMsg, "stream error") || strings.Contains(errMsg, "INTERNAL_ERROR") {
+			result.Reason = streamFinishUpstreamStreamError
 			requestSize := len(bodyBytes)
 			sizeStr := formatRequestSize(requestSize)
 			logger.Error("[%s] HTTP/2 stream error (Request size: %s / %d bytes): %v",
@@ -194,12 +248,20 @@ func (p *Proxy) handleStreamingResponse(w http.ResponseWriter, resp *http.Respon
 				logger.Warn("[%s] This error may occur due to upstream server limitations or network issues.", endpoint.Name)
 			}
 		} else {
+			result.Reason = streamFinishUpstreamStreamError
 			logger.Error("[%s] Scanner error: %v", endpoint.Name, err)
 		}
 	}
 
 	resp.Body.Close()
-	return inputTokens, outputTokens, outputText.String()
+	if result.Reason == "" {
+		result.Reason = streamFinishCompleted
+		result.Completed = true
+	}
+	result.InputTokens = inputTokens
+	result.OutputTokens = outputTokens
+	result.OutputText = outputText.String()
+	return result
 }
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.

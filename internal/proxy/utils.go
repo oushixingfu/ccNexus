@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/tokencount"
 )
@@ -17,6 +20,15 @@ func normalizeAPIUrl(apiUrl string) string {
 	return apiUrl
 }
 
+func cloneEndpoints(endpoints []config.Endpoint) []config.Endpoint {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	cloned := make([]config.Endpoint, len(endpoints))
+	copy(cloned, endpoints)
+	return cloned
+}
+
 const (
 	endpointFastFailoverAttempts = 2
 	endpointSlowFailoverAttempts = 3
@@ -27,6 +39,17 @@ func shouldRetry(statusCode int) bool {
 	return statusCode != http.StatusOK &&
 		statusCode != http.StatusBadRequest &&
 		statusCode != http.StatusUnauthorized
+}
+
+func isClientCanceled(ctx context.Context, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.Canceled) ||
+		strings.Contains(strings.ToLower(err.Error()), "context canceled")
 }
 
 // retryReasonForHTTPStatus classifies upstream HTTP retry failures for logs and

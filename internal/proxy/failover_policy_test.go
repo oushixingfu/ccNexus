@@ -189,15 +189,17 @@ func newFailoverPolicyTestProxy(endpoints []config.Endpoint, client *http.Client
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints(endpoints)
 	return &Proxy{
-		config:         cfg,
-		stats:          NewStats(&noopStatsStorage{}, "test-device"),
-		httpClient:     client,
-		activeRequests: make(map[string]int),
-		endpointCtx:    make(map[string]context.Context),
-		endpointCancel: make(map[string]context.CancelFunc),
-		currentIndex:   0,
-		resolver:       NewEndpointResolverWithFunc(cfg.GetEndpoints),
-		retrySleep:     func(time.Duration) {},
+		config:                  cfg,
+		configEndpointsSnapshot: cloneEndpoints(cfg.GetEndpoints()),
+		stats:                   NewStats(&noopStatsStorage{}, "test-device"),
+		httpClient:              client,
+		activeRequests:          make(map[string]int),
+		endpointCtx:             make(map[string]context.Context),
+		endpointCancel:          make(map[string]context.CancelFunc),
+		currentIndex:            0,
+		resolver:                NewEndpointResolverWithFunc(cfg.GetEndpoints),
+		retrySleep:              func(time.Duration) {},
+		endpointCooldowns:       make(map[string]endpointCooldown),
 	}
 }
 

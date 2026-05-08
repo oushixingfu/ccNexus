@@ -52,17 +52,7 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// Send stats update
 			stats := h.proxy.GetStats()
 
-			// Get current endpoint
-			endpoints := h.config.GetEndpoints()
-			var currentEndpoint string
-			if len(endpoints) > 0 {
-				for _, ep := range endpoints {
-					if ep.Enabled {
-						currentEndpoint = ep.Name
-						break
-					}
-				}
-			}
+			currentEndpoint := h.proxy.GetCurrentEndpointName()
 
 			event := map[string]interface{}{
 				"type":            "stats",

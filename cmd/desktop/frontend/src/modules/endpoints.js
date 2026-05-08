@@ -97,6 +97,144 @@ let endpointPanelExpanded = true;
 let tokenPoolCurrentIndex = -1;
 let tokenPoolErrorCache = new Map();
 let tokenPoolUsageCache = new Map();
+let currentEndpointName = '';
+let endpointRuntimeStatuses = {};
+let endpointActiveCounts = {};
+
+async function loadCurrentEndpointName() {
+    try {
+        currentEndpointName = await window.go.main.App.GetCurrentEndpoint();
+    } catch (error) {
+        console.error('Failed to get current endpoint:', error);
+        currentEndpointName = '';
+    }
+    return currentEndpointName;
+}
+
+async function loadEndpointRuntimeStatuses() {
+    try {
+        if (!window.go?.main?.App?.GetEndpointRuntimeStatuses) {
+            endpointRuntimeStatuses = {};
+            return endpointRuntimeStatuses;
+        }
+        const raw = await window.go.main.App.GetEndpointRuntimeStatuses();
+        endpointRuntimeStatuses = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+        console.error('Failed to get endpoint runtime statuses:', error);
+        endpointRuntimeStatuses = {};
+    }
+    return endpointRuntimeStatuses;
+}
+
+function formatRuntimeTime(value) {
+    if (!value) {
+        return '';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return '';
+    }
+    return date.toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+}
+
+function renderDefaultEndpointControl(endpointName, enabled) {
+    const safeName = escapeHtml(endpointName);
+    const isDefaultEndpoint = endpointName === currentEndpointName;
+    if (isDefaultEndpoint) {
+        return '<span class="current-badge">' + t('endpoints.defaultEndpoint') + '</span>';
+    }
+    if (enabled) {
+        return '<button class="btn btn-switch" data-action="switch" data-name="' + safeName + '">' + t('endpoints.switchTo') + '</button>';
+    }
+    return '';
+}
+
+function renderCompactDefaultEndpointControl(endpointName, enabled) {
+    const safeName = escapeHtml(endpointName);
+    const isDefaultEndpoint = endpointName === currentEndpointName;
+    if (isDefaultEndpoint) {
+        return '<span class="btn btn-primary compact-badge-btn">' + t('endpoints.defaultEndpoint') + '</span>';
+    }
+    if (enabled) {
+        return '<button class="btn btn-primary compact-badge-btn" data-action="switch" data-name="' + safeName + '">' + t('endpoints.switchTo') + '</button>';
+    }
+    return '<span class="btn btn-primary compact-badge-btn compact-badge-disabled">' + t('endpoints.disabled') + '</span>';
+}
+
+function renderEndpointRuntimeBadges(endpointName) {
+    const status = endpointRuntimeStatuses[endpointName] || {};
+    const activeCount = endpointActiveCounts[endpointName] || 0;
+    const badges = [];
+
+    if (activeCount > 0) {
+        const label = activeCount > 1
+            ? `${t('endpoints.inUse')} x${activeCount}`
+            : t('endpoints.inUse');
+        badges.push(`<span class="runtime-badge runtime-badge-active" title="${t('endpoints.inUse')}">${label}</span>`);
+    }
+
+    const successTime = formatRuntimeTime(status.lastSuccessAt);
+    if (successTime) {
+        badges.push(`<span class="runtime-badge runtime-badge-success" title="${t('endpoints.recentSuccess')}">${t('endpoints.recentSuccess')} ${successTime}</span>`);
+    }
+
+    const failureTime = formatRuntimeTime(status.lastFailureAt);
+    if (failureTime) {
+        const reason = status.lastFailureReason ? `${t('endpoints.failureReason')}: ${status.lastFailureReason}` : t('endpoints.recentFailure');
+        badges.push(`<span class="runtime-badge runtime-badge-failure" title="${escapeHtml(reason)}">${t('endpoints.recentFailure')} ${failureTime}</span>`);
+    }
+
+    return badges.join('');
+}
+
+function updateRuntimeStatusSlot(endpointName) {
+    document.querySelectorAll('.endpoint-runtime-slot').forEach(slot => {
+        if (slot.dataset.name === endpointName) {
+            slot.innerHTML = renderEndpointRuntimeBadges(endpointName);
+        }
+    });
+}
+
+function updateDefaultEndpointSlots() {
+    document.querySelectorAll('.endpoint-default-slot').forEach(slot => {
+        const endpointName = slot.dataset.name || '';
+        const enabled = slot.dataset.enabled !== 'false';
+        const compact = slot.dataset.view === 'compact';
+        slot.innerHTML = compact
+            ? renderCompactDefaultEndpointControl(endpointName, enabled)
+            : renderDefaultEndpointControl(endpointName, enabled);
+        bindEndpointSwitchButton(slot.querySelector('[data-action="switch"]'));
+    });
+}
+
+function bindEndpointSwitchButton(switchBtn) {
+    if (!switchBtn || switchBtn.dataset.bound === 'true') {
+        return;
+    }
+    switchBtn.dataset.bound = 'true';
+    switchBtn.addEventListener('click', async () => {
+        const name = switchBtn.getAttribute('data-name');
+        try {
+            switchBtn.disabled = true;
+            switchBtn.innerHTML = '...';
+            await window.go.main.App.SwitchToEndpoint(name);
+            currentEndpointName = name;
+            updateDefaultEndpointSlots();
+        } catch (error) {
+            console.error('Failed to switch endpoint:', error);
+            alert(t('endpoints.switchFailed') + ': ' + error);
+            if (switchBtn.isConnected) {
+                switchBtn.disabled = false;
+                switchBtn.innerHTML = t('endpoints.switchTo');
+            }
+        }
+    });
+}
 
 function showNotification(message, type = 'info') {
     const notification = document.createElement('div');
@@ -152,13 +290,8 @@ export function setTestState(button, index) {
 export async function renderEndpoints(endpoints) {
     const container = document.getElementById('endpointList');
 
-    // Get current endpoint from backend
-    let currentEndpointName = '';
-    try {
-        currentEndpointName = await window.go.main.App.GetCurrentEndpoint();
-    } catch (error) {
-        console.error('Failed to get current endpoint:', error);
-    }
+    await loadCurrentEndpointName();
+    await loadEndpointRuntimeStatuses();
 
     // 应用筛选
     const filteredEndpoints = filterEndpoints(endpoints);
@@ -220,7 +353,6 @@ export async function renderEndpoints(endpoints) {
         const transformer = ep.transformer || 'claude';
         const model = ep.model || '';
         const authMode = ep.authMode || 'api_key';
-        const isCurrentEndpoint = ep.name === currentEndpointName;
 
         const item = document.createElement('div');
         item.className = 'endpoint-item';
@@ -255,8 +387,8 @@ export async function renderEndpoints(endpoints) {
                     <span title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
                     ${ep.name}
                     ${!enabled ? '<span class="disabled-badge">' + t('endpoints.disabled') + '</span>' : ''}
-                    ${isCurrentEndpoint ? '<span class="current-badge">' + t('endpoints.current') + '</span>' : ''}
-                    ${enabled && !isCurrentEndpoint ? '<button class="btn btn-switch" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : ''}
+                    <span class="endpoint-default-slot" data-name="${escapeHtml(ep.name)}" data-enabled="${enabled ? 'true' : 'false'}" data-view="detail">${renderDefaultEndpointControl(ep.name, enabled)}</span>
+                    <span class="endpoint-runtime-slot endpoint-status-badges" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name)}</span>
                 </h3>
                 <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">🌐 ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
                 ${authMode === 'api_key'
@@ -328,25 +460,7 @@ export async function renderEndpoints(endpoints) {
 
         // Add switch button event listener
         const switchBtn = item.querySelector('[data-action="switch"]');
-        if (switchBtn) {
-            switchBtn.addEventListener('click', async () => {
-                const name = switchBtn.getAttribute('data-name');
-                try {
-                    switchBtn.disabled = true;
-                    switchBtn.innerHTML = '⏳';
-                    await window.go.main.App.SwitchToEndpoint(name);
-                    window.loadConfig(); // Refresh display
-                } catch (error) {
-                    console.error('Failed to switch endpoint:', error);
-                    alert(t('endpoints.switchFailed') + ': ' + error);
-                } finally {
-                    if (switchBtn) {
-                        switchBtn.disabled = false;
-                        switchBtn.innerHTML = t('endpoints.switchTo');
-                    }
-                }
-            });
-        }
+        bindEndpointSwitchButton(switchBtn);
 
         // Add drag and drop event listeners
         setupDragAndDrop(item, container);
@@ -1549,12 +1663,32 @@ function setupDragAndDrop(item, container) {
 export function initEndpointSuccessListener() {
     if (window.runtime && window.runtime.EventsOn) {
         window.runtime.EventsOn('endpoint:success', (endpointName) => {
-            // 更新测试状态为成功
             saveEndpointTestStatus(endpointName, true);
-            // 刷新端点列表显示
-            if (window.loadConfig) {
-                window.loadConfig();
+        });
+
+        window.runtime.EventsOn('endpoint:current', (event) => {
+            currentEndpointName = event?.name || '';
+            updateDefaultEndpointSlots();
+        });
+
+        window.runtime.EventsOn('endpoint:runtime', (event) => {
+            const endpointName = event?.endpointName;
+            if (!endpointName) {
+                return;
             }
+            endpointActiveCounts[endpointName] = Number(event.activeCount || 0);
+            endpointRuntimeStatuses[endpointName] = {
+                ...(endpointRuntimeStatuses[endpointName] || {}),
+                endpointName,
+                lastSuccessAt: event.lastSuccessAt || endpointRuntimeStatuses[endpointName]?.lastSuccessAt,
+                lastFailureAt: event.lastFailureAt || endpointRuntimeStatuses[endpointName]?.lastFailureAt,
+                lastFailureReason: event.lastFailureReason || endpointRuntimeStatuses[endpointName]?.lastFailureReason,
+                lastAttemptAt: event.lastAttemptAt || endpointRuntimeStatuses[endpointName]?.lastAttemptAt
+            };
+            if (endpointActiveCounts[endpointName] <= 0) {
+                delete endpointActiveCounts[endpointName];
+            }
+            updateRuntimeStatusSlot(endpointName);
         });
     }
 }
@@ -1599,7 +1733,6 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
         const transformer = ep.transformer || 'claude';
         const model = ep.model || '';
         const authMode = ep.authMode || 'api_key';
-        const isCurrentEndpoint = ep.name === currentEndpointName;
 
         // 获取测试状态
         const testStatus = getEndpointTestStatus(ep.name);
@@ -1649,7 +1782,8 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
             </div>
             <span class="compact-status" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
             <span class="compact-name" title="${ep.name}">${ep.name}</span>
-            ${isCurrentEndpoint ? '<span class="btn btn-primary compact-badge-btn">' + t('endpoints.current') + '</span>' : (enabled ? '<button class="btn btn-primary compact-badge-btn" data-action="switch" data-name="' + ep.name + '">' + t('endpoints.switchTo') + '</button>' : '<span class="btn btn-primary compact-badge-btn compact-badge-disabled">' + t('endpoints.disabled') + '</span>')}
+            <span class="endpoint-default-slot compact-default-slot" data-name="${escapeHtml(ep.name)}" data-enabled="${enabled ? 'true' : 'false'}" data-view="compact">${renderCompactDefaultEndpointControl(ep.name, enabled)}</span>
+            <span class="endpoint-runtime-slot compact-runtime-slot" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name)}</span>
             <span class="compact-url" title="${ep.apiUrl}"><span class="compact-url-icon">🌐</span>${displayUrl}</span>
             <span class="compact-transformer">🔄 ${transformer}</span>
             <span class="compact-stats" title="${statsTooltip}">📊 ${stats.requests} | 🎯 ${formatTokens(stats.inputTokens + stats.outputTokens)}</span>
@@ -1716,25 +1850,7 @@ function bindCompactItemEvents(item, index, enabled) {
     });
 
     // 切换按钮
-    if (switchBtn) {
-        switchBtn.addEventListener('click', async () => {
-            const name = switchBtn.getAttribute('data-name');
-            try {
-                switchBtn.disabled = true;
-                switchBtn.innerHTML = '⏳';
-                await window.go.main.App.SwitchToEndpoint(name);
-                window.loadConfig(); // Refresh display
-            } catch (error) {
-                console.error('Failed to switch endpoint:', error);
-                alert(t('endpoints.switchFailed') + ': ' + error);
-            } finally {
-                if (switchBtn) {
-                    switchBtn.disabled = false;
-                    switchBtn.innerHTML = t('endpoints.switchTo');
-                }
-            }
-        });
-    }
+    bindEndpointSwitchButton(switchBtn);
 
     // 更多操作按钮
     moreBtn.addEventListener('click', (e) => {

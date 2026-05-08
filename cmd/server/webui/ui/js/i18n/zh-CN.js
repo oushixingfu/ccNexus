@@ -64,7 +64,7 @@ export default {
         tokenPool: '令牌池',
         status: '状态',
         actions: '操作',
-        current: '当前',
+        current: '默认',
         notTested: '未测试',
         testPassed: '测试通过',
         testFailed: '测试失败',

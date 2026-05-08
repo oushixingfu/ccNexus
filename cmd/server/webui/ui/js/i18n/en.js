@@ -64,7 +64,7 @@ export default {
         tokenPool: 'Token Pool',
         status: 'Status',
         actions: 'Actions',
-        current: 'Current',
+        current: 'Default',
         notTested: 'Not tested',
         testPassed: 'Test passed',
         testFailed: 'Test failed',

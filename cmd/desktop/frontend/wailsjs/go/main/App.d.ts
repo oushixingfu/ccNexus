@@ -71,6 +71,8 @@ export function GetConfig():Promise<string>;
 
 export function GetCurrentEndpoint():Promise<string>;
 
+export function GetEndpointRuntimeStatuses():Promise<string>;
+
 export function GetDownloadProgress():Promise<string>;
 
 export function GetEndpointCredentials(arg1:number):Promise<string>;

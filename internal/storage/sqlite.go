@@ -144,6 +144,15 @@ func (s *SQLiteStorage) initSchema() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS endpoint_runtime_status (
+		endpoint_name TEXT PRIMARY KEY,
+		last_success_at DATETIME,
+		last_failure_at DATETIME,
+		last_failure_reason TEXT,
+		last_attempt_at DATETIME,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE TABLE IF NOT EXISTS daily_stats (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		endpoint_name TEXT NOT NULL,
@@ -171,6 +180,7 @@ func (s *SQLiteStorage) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_expires_at ON endpoint_credentials(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_credential_rate_limits_updated ON credential_rate_limits(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_credential_usage_endpoint ON credential_usage(endpoint_name);
+	CREATE INDEX IF NOT EXISTS idx_endpoint_runtime_status_updated ON endpoint_runtime_status(updated_at);
 	`
 
 	if _, err := s.db.Exec(schema); err != nil {
@@ -369,9 +379,106 @@ func (s *SQLiteStorage) DeleteEndpoint(name string) error {
 	if _, err := s.db.Exec(`DELETE FROM endpoint_credentials WHERE endpoint_name=?`, name); err != nil {
 		return err
 	}
+	if _, err := s.db.Exec(`DELETE FROM endpoint_runtime_status WHERE endpoint_name=?`, name); err != nil {
+		return err
+	}
 
 	_, err := s.db.Exec(`DELETE FROM endpoints WHERE name=?`, name)
 	return err
+}
+
+func (s *SQLiteStorage) UpsertEndpointRuntimeStatus(endpointName string, patch EndpointRuntimeStatusPatch) (*EndpointRuntimeStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(endpointName) == "" {
+		return nil, fmt.Errorf("endpoint name is required")
+	}
+
+	var lastFailureReason interface{}
+	if patch.LastFailureReason != nil {
+		lastFailureReason = *patch.LastFailureReason
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO endpoint_runtime_status (
+			endpoint_name, last_success_at, last_failure_at, last_failure_reason, last_attempt_at, updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(endpoint_name) DO UPDATE SET
+			last_success_at=COALESCE(excluded.last_success_at, endpoint_runtime_status.last_success_at),
+			last_failure_at=COALESCE(excluded.last_failure_at, endpoint_runtime_status.last_failure_at),
+			last_failure_reason=COALESCE(excluded.last_failure_reason, endpoint_runtime_status.last_failure_reason),
+			last_attempt_at=COALESCE(excluded.last_attempt_at, endpoint_runtime_status.last_attempt_at),
+			updated_at=CURRENT_TIMESTAMP
+	`, endpointName, patch.LastSuccessAt, patch.LastFailureAt, lastFailureReason, patch.LastAttemptAt)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.getEndpointRuntimeStatusLocked(endpointName)
+}
+
+func (s *SQLiteStorage) GetEndpointRuntimeStatuses() (map[string]*EndpointRuntimeStatus, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT endpoint_name, last_success_at, last_failure_at, COALESCE(last_failure_reason, ''), last_attempt_at, updated_at
+		FROM endpoint_runtime_status
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	statuses := make(map[string]*EndpointRuntimeStatus)
+	for rows.Next() {
+		status, err := scanEndpointRuntimeStatus(rows)
+		if err != nil {
+			return nil, err
+		}
+		statuses[status.EndpointName] = status
+	}
+	return statuses, rows.Err()
+}
+
+func (s *SQLiteStorage) getEndpointRuntimeStatusLocked(endpointName string) (*EndpointRuntimeStatus, error) {
+	row := s.db.QueryRow(`
+		SELECT endpoint_name, last_success_at, last_failure_at, COALESCE(last_failure_reason, ''), last_attempt_at, updated_at
+		FROM endpoint_runtime_status
+		WHERE endpoint_name=?
+	`, endpointName)
+	return scanEndpointRuntimeStatus(row)
+}
+
+type endpointRuntimeStatusScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanEndpointRuntimeStatus(scanner endpointRuntimeStatusScanner) (*EndpointRuntimeStatus, error) {
+	var status EndpointRuntimeStatus
+	var lastSuccessAt, lastFailureAt, lastAttemptAt sql.NullTime
+	var updatedAt sql.NullTime
+
+	if err := scanner.Scan(
+		&status.EndpointName,
+		&lastSuccessAt,
+		&lastFailureAt,
+		&status.LastFailureReason,
+		&lastAttemptAt,
+		&updatedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	status.LastSuccessAt = fromNullTime(lastSuccessAt)
+	status.LastFailureAt = fromNullTime(lastFailureAt)
+	status.LastAttemptAt = fromNullTime(lastAttemptAt)
+	if updatedAt.Valid {
+		status.UpdatedAt = updatedAt.Time
+	}
+	return &status, nil
 }
 
 func (s *SQLiteStorage) RecordDailyStat(stat *DailyStat) error {

@@ -34,24 +34,27 @@ type APIResponse struct {
 
 // Proxy represents the proxy server
 type Proxy struct {
-	config            *config.Config
-	storage           *storage.SQLiteStorage
-	stats             *Stats
-	currentIndex      int
-	mu                sync.RWMutex
-	server            *http.Server
-	httpClient        *http.Client                  // Reusable HTTP client with connection pool
-	activeRequests    map[string]int                // tracks active request count by endpoint name
-	activeRequestsMu  sync.RWMutex                  // protects activeRequests map
-	endpointCtx       map[string]context.Context    // context per endpoint for cancellation
-	endpointCancel    map[string]context.CancelFunc // cancel functions per endpoint
-	ctxMu             sync.RWMutex                  // protects context maps
-	onEndpointSuccess func(endpointName string)     // callback when endpoint request succeeds
-	modelsCache       *ModelsCache                  // Cache for /v1/models endpoint
-	resolver          *EndpointResolver             // 端点解析器，用于解析客户端指定的端点
-	retrySleep        func(time.Duration)           // injectable sleep hook for retry backoff tests
-	endpointCooldowns map[string]endpointCooldown   // temporary request-plan skips for deterministic endpoint failures
-	cooldownMu        sync.RWMutex                  // protects endpointCooldowns
+	config                   *config.Config
+	configEndpointsSnapshot  []config.Endpoint
+	storage                  *storage.SQLiteStorage
+	stats                    *Stats
+	currentIndex             int
+	mu                       sync.RWMutex
+	server                   *http.Server
+	httpClient               *http.Client                  // Reusable HTTP client with connection pool
+	activeRequests           map[string]int                // tracks active request count by endpoint name
+	activeRequestsMu         sync.RWMutex                  // protects activeRequests map
+	endpointCtx              map[string]context.Context    // context per endpoint for cancellation
+	endpointCancel           map[string]context.CancelFunc // cancel functions per endpoint
+	ctxMu                    sync.RWMutex                  // protects context maps
+	onEndpointSuccess        func(endpointName string)     // callback when endpoint request succeeds
+	onCurrentEndpointChanged func(EndpointCurrentEvent)
+	onEndpointRuntimeChanged func(EndpointRuntimeEvent)
+	modelsCache              *ModelsCache                // Cache for /v1/models endpoint
+	resolver                 *EndpointResolver           // 端点解析器，用于解析客户端指定的端点
+	retrySleep               func(time.Duration)         // injectable sleep hook for retry backoff tests
+	endpointCooldowns        map[string]endpointCooldown // temporary request-plan skips for deterministic endpoint failures
+	cooldownMu               sync.RWMutex                // protects endpointCooldowns
 }
 
 // New creates a new Proxy instance
@@ -76,24 +79,35 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 	}
 
 	return &Proxy{
-		config:            cfg,
-		storage:           sqliteStorage,
-		stats:             stats,
-		currentIndex:      0,
-		httpClient:        httpClient,
-		activeRequests:    make(map[string]int),
-		endpointCtx:       make(map[string]context.Context),
-		endpointCancel:    make(map[string]context.CancelFunc),
-		modelsCache:       NewModelsCache(cfg.ModelsCacheTTL),
-		resolver:          NewEndpointResolverWithFunc(cfg.GetEndpoints),
-		retrySleep:        time.Sleep,
-		endpointCooldowns: make(map[string]endpointCooldown),
+		config:                  cfg,
+		configEndpointsSnapshot: cloneEndpoints(cfg.GetEndpoints()),
+		storage:                 sqliteStorage,
+		stats:                   stats,
+		currentIndex:            0,
+		httpClient:              httpClient,
+		activeRequests:          make(map[string]int),
+		endpointCtx:             make(map[string]context.Context),
+		endpointCancel:          make(map[string]context.CancelFunc),
+		modelsCache:             NewModelsCache(cfg.ModelsCacheTTL),
+		resolver:                NewEndpointResolverWithFunc(cfg.GetEndpoints),
+		retrySleep:              time.Sleep,
+		endpointCooldowns:       make(map[string]endpointCooldown),
 	}
 }
 
 // SetOnEndpointSuccess sets the callback for successful endpoint requests
 func (p *Proxy) SetOnEndpointSuccess(callback func(endpointName string)) {
 	p.onEndpointSuccess = callback
+}
+
+// SetOnCurrentEndpointChanged sets the callback for default endpoint changes.
+func (p *Proxy) SetOnCurrentEndpointChanged(callback func(EndpointCurrentEvent)) {
+	p.onCurrentEndpointChanged = callback
+}
+
+// SetOnEndpointRuntimeChanged sets the callback for live/persisted endpoint status changes.
+func (p *Proxy) SetOnEndpointRuntimeChanged(callback func(EndpointRuntimeEvent)) {
+	p.onEndpointRuntimeChanged = callback
 }
 
 // Start starts the proxy server
@@ -164,6 +178,10 @@ func (p *Proxy) getCurrentEndpoint() config.Endpoint {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	return p.getCurrentEndpointLocked()
+}
+
+func (p *Proxy) getCurrentEndpointLocked() config.Endpoint {
 	endpoints := p.getEnabledEndpoints()
 	if len(endpoints) == 0 {
 		// Return empty endpoint if no enabled endpoints
@@ -175,22 +193,32 @@ func (p *Proxy) getCurrentEndpoint() config.Endpoint {
 }
 
 // markRequestActive marks an endpoint as having active requests
-func (p *Proxy) markRequestActive(endpointName string) {
+func (p *Proxy) markRequestActive(endpointName string) int {
 	p.activeRequestsMu.Lock()
-	defer p.activeRequestsMu.Unlock()
 	p.activeRequests[endpointName]++
+	count := p.activeRequests[endpointName]
+	p.activeRequestsMu.Unlock()
+
+	status := p.recordEndpointAttempt(endpointName)
+	p.emitEndpointRuntimeEvent(endpointName, "start", status)
+	return count
 }
 
 // markRequestInactive marks an endpoint as having no active requests
-func (p *Proxy) markRequestInactive(endpointName string) {
+func (p *Proxy) markRequestInactive(endpointName string) int {
 	p.activeRequestsMu.Lock()
-	defer p.activeRequestsMu.Unlock()
 	count := p.activeRequests[endpointName]
 	if count <= 1 {
 		delete(p.activeRequests, endpointName)
-		return
+		count = 0
+	} else {
+		count--
+		p.activeRequests[endpointName] = count
 	}
-	p.activeRequests[endpointName] = count - 1
+	p.activeRequestsMu.Unlock()
+
+	p.emitEndpointRuntimeEvent(endpointName, "end", nil)
+	return count
 }
 
 // hasActiveRequests checks if an endpoint has active requests
@@ -270,6 +298,7 @@ func (p *Proxy) rotateEndpoint() config.Endpoint {
 		logger.Debug("[SWITCH] %s → %s (#%d)", oldEndpoint.Name, newEndpoint.Name, p.currentIndex+1)
 	}
 
+	go p.emitCurrentEndpointChanged(oldEndpoint.Name, newEndpoint.Name, "rotation")
 	return newEndpoint
 }
 
@@ -281,13 +310,13 @@ func (p *Proxy) GetCurrentEndpointName() string {
 
 // SetCurrentEndpoint manually switches to a specific endpoint by name
 // Returns error if endpoint not found or not enabled
-// Thread-safe and cancels ongoing requests on the old endpoint
+// Thread-safe. Existing in-flight requests continue on the endpoint they already selected.
 func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	endpoints := p.getEnabledEndpoints()
 	if len(endpoints) == 0 {
+		p.mu.Unlock()
 		return fmt.Errorf("no enabled endpoints")
 	}
 
@@ -295,16 +324,15 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 	for i, ep := range endpoints {
 		if ep.Name == targetName {
 			oldEndpoint := endpoints[p.currentIndex%len(endpoints)]
-			if oldEndpoint.Name != targetName {
-				// Cancel all requests on the old endpoint
-				p.cancelEndpointRequests(oldEndpoint.Name)
-			}
 			p.currentIndex = i
 			logger.Info("[MANUAL SWITCH] %s → %s", oldEndpoint.Name, ep.Name)
+			p.mu.Unlock()
+			p.emitCurrentEndpointChanged(oldEndpoint.Name, ep.Name, "manual_switch")
 			return nil
 		}
 	}
 
+	p.mu.Unlock()
 	return fmt.Errorf("endpoint '%s' not found or not enabled", targetName)
 }
 
@@ -420,10 +448,11 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestEndpoints := endpoints
+	currentEndpointName := p.GetCurrentEndpointName()
 	if !useSpecificEndpoint {
 		requestEndpoints = p.getRequestPlanEndpoints(endpoints, obs)
 	}
-	requestPlan := newRequestEndpointPlan(requestEndpoints, p.getCurrentEndpointIndex())
+	requestPlan := newRequestEndpointPlanForCurrent(requestEndpoints, endpoints, currentEndpointName)
 	maxRetries := p.computeMaxRetries(requestEndpoints)
 	if useSpecificEndpoint {
 		maxRetries = endpointSlowFailoverAttempts
@@ -465,7 +494,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			credential, err := p.selectCredential(endpoint.Name)
 			if err != nil {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "credential_select_failed", "Failed to select token pool credential: %v", err)
-				p.stats.RecordError(endpoint.Name)
+				p.recordEndpointError(endpoint.Name, "credential_select_failed")
 				p.markRequestInactive(endpoint.Name)
 				if endpointAttempts >= endpointFastFailoverAttempts {
 					advanceForFailure(endpoint, "credential_select_failed", attemptNumber)
@@ -474,7 +503,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "no_usable_token", "No usable token in token pool")
-				p.stats.RecordError(endpoint.Name)
+				p.recordEndpointError(endpoint.Name, "no_usable_token")
 				p.markRequestInactive(endpoint.Name)
 				if endpointAttempts >= endpointFastFailoverAttempts {
 					advanceForFailure(endpoint, "no_usable_token", attemptNumber)
@@ -498,7 +527,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		} else if apiKey == "" {
 			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "empty_api_key", "API key mode but apiKey is empty")
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, "empty_api_key")
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= endpointFastFailoverAttempts {
 				advanceForFailure(endpoint, "empty_api_key", attemptNumber)
@@ -509,7 +538,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		trans, err := prepareTransformerForClient(clientFormat, endpoint)
 		if err != nil {
 			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, "prepare_transformer_failed", "%v", err)
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, "prepare_transformer_failed")
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= endpointFastFailoverAttempts {
 				advanceForFailure(endpoint, "prepare_transformer_failed", attemptNumber)
@@ -522,7 +551,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		transformedBody, err := trans.TransformRequest(bodyBytes)
 		if err != nil {
 			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, "transform_request_failed", "Failed to transform request: %v", err)
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, "transform_request_failed")
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= endpointFastFailoverAttempts {
 				advanceForFailure(endpoint, "transform_request_failed", attemptNumber)
@@ -578,7 +607,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		proxyReq, err := buildProxyRequest(r, endpoint, apiKey, transformedBody, transformerName, selectedCredential)
 		if err != nil {
 			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, "build_request_failed", "Failed to create request: %v", err)
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, "build_request_failed")
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= endpointFastFailoverAttempts {
 				advanceForFailure(endpoint, "build_request_failed", attemptNumber)
@@ -597,6 +626,11 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		resp, err := sendRequest(ctx, proxyReq, p.httpClient, p.config)
 		if err != nil {
+			if isClientCanceled(ctx, err) {
+				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "client_canceled", "Client canceled request: %v", err)
+				p.markRequestInactive(endpoint.Name)
+				return
+			}
 			retryReason := "send_request_failed"
 			if isTransientNetworkError(err) {
 				retryReason = "transient_network_error"
@@ -604,6 +638,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, retryReason, "Request failed: %v", err)
 			if isTransientNetworkError(err) {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, retryReason, "Transient network error, retrying same endpoint: %v", err)
+				status := p.recordEndpointFailure(endpoint.Name, retryReason)
+				p.emitEndpointRuntimeEvent(endpoint.Name, "failure", status)
 				p.markRequestInactive(endpoint.Name)
 				time.Sleep(300 * time.Millisecond)
 				endpointAttempts = 0
@@ -611,12 +647,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			p.markCredentialFailure(credentialID, 0, err.Error())
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, retryReason)
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= endpointFastFailoverAttempts {
 				advanceForFailure(endpoint, retryReason, attemptNumber)
 			}
 			continue
+		}
+		if isClientCanceled(ctx, nil) {
+			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, "client_canceled", "Client canceled request after upstream response")
+			if resp.Body != nil {
+				resp.Body.Close()
+			}
+			p.markRequestInactive(endpoint.Name)
+			return
 		}
 
 		if resp.StatusCode == http.StatusOK {
@@ -642,17 +686,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				p.markCredentialSuccess(credentialID)
 				p.clearEndpointCooldown(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
-				if p.onEndpointSuccess != nil {
-					p.onEndpointSuccess(endpoint.Name)
-				}
+				p.recordEndpointSuccessEvent(endpoint.Name)
 				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 				logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
+				return
+			}
+			if isClientCanceled(ctx, err) {
+				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "client_canceled", "Client canceled while aggregating streaming response as non-stream: %v", err)
+				p.markRequestInactive(endpoint.Name)
 				return
 			}
 			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "aggregate_streaming_failed", "Failed to aggregate streaming response as non-stream: %v", err)
 			p.markCredentialFailure(credentialID, 0, err.Error())
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, "aggregate_streaming_failed")
 			p.markRequestInactive(endpoint.Name)
 			if endpointAttempts >= endpointFastFailoverAttempts {
 				advanceForFailure(endpoint, "aggregate_streaming_failed", attemptNumber)
@@ -661,11 +708,31 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK && isStreaming {
-			inputTokens, outputTokens, outputText := p.handleStreamingResponse(w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID)
+			streamResult := p.handleStreamingResponse(ctx, w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID)
+			inputTokens := streamResult.InputTokens
+			outputTokens := streamResult.OutputTokens
+			outputText := streamResult.OutputText
 
 			// Fallback: estimate tokens when usage is 0
 			if inputTokens == 0 || outputTokens == 0 {
 				inputTokens, outputTokens = p.estimateTokens(bodyBytes, outputText, inputTokens, outputTokens, endpoint.Name)
+			}
+			if streamResult.Err != nil {
+				retryReason := streamResult.Reason
+				if retryReason == "" {
+					retryReason = "streaming_failed"
+				}
+				if retryReason == streamFinishClientCanceled || isClientCanceled(ctx, streamResult.Err) {
+					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "client_canceled", "Client canceled streaming response: %v", streamResult.Err)
+					p.markRequestInactive(endpoint.Name)
+					return
+				}
+				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, retryReason, "Streaming response failed: %v", streamResult.Err)
+				p.markCredentialFailure(credentialID, 0, streamResult.Err.Error())
+				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+				p.recordEndpointError(endpoint.Name, retryReason)
+				p.markRequestInactive(endpoint.Name)
+				return
 			}
 
 			p.stats.RecordRequest(endpoint.Name)
@@ -674,9 +741,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markCredentialSuccess(credentialID)
 			p.clearEndpointCooldown(endpoint.Name)
 			p.markRequestInactive(endpoint.Name)
-			if p.onEndpointSuccess != nil {
-				p.onEndpointSuccess(endpoint.Name)
-			}
+			p.recordEndpointSuccessEvent(endpoint.Name)
 			totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 			logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
 			return
@@ -691,13 +756,25 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				p.markCredentialSuccess(credentialID)
 				p.clearEndpointCooldown(endpoint.Name)
 				p.markRequestInactive(endpoint.Name)
-				if p.onEndpointSuccess != nil {
-					p.onEndpointSuccess(endpoint.Name)
-				}
+				p.recordEndpointSuccessEvent(endpoint.Name)
 				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 				logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
 				return
 			}
+			if isClientCanceled(ctx, err) {
+				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "client_canceled", "Client canceled non-streaming response: %v", err)
+				p.markRequestInactive(endpoint.Name)
+				return
+			}
+			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "non_stream_response_failed", "Failed to handle non-streaming response: %v", err)
+			p.markCredentialFailure(credentialID, 0, err.Error())
+			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+			p.recordEndpointError(endpoint.Name, "non_stream_response_failed")
+			p.markRequestInactive(endpoint.Name)
+			if endpointAttempts >= endpointFastFailoverAttempts {
+				advanceForFailure(endpoint, "non_stream_response_failed", attemptNumber)
+			}
+			continue
 		}
 
 		if shouldRetry(resp.StatusCode) {
@@ -717,7 +794,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.DebugLog("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, errMsg)
 			p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.stats.RecordError(endpoint.Name)
+			p.recordEndpointError(endpoint.Name, retryReason)
 			p.markRequestInactive(endpoint.Name)
 			shouldFailover := shouldRotateEndpointAfterHTTPFailure(endpointAttempts, resp.StatusCode, errMsg)
 			if retryReason == "quota_exhausted" {
@@ -754,7 +831,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "route_gateway_denial", "Upstream %d looks like route/gateway denial, skipping credential invalidation", resp.StatusCode)
 			}
 			if skipCredentialPenalty {
-				p.stats.RecordError(endpoint.Name)
+				p.recordEndpointError(endpoint.Name, "route_gateway_denial")
 				p.markRequestInactive(endpoint.Name)
 			} else {
 				if selectedCredential != nil &&
@@ -776,7 +853,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				}
 				p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-				p.stats.RecordError(endpoint.Name)
+				p.recordEndpointError(endpoint.Name, "credential_auth_failed")
 				p.markRequestInactive(endpoint.Name)
 				endpointAttempts = 0
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "credential_auth_failed", "Credential auth failed (%d), retrying with next token", resp.StatusCode)
@@ -802,6 +879,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			} else {
 				p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+			}
+			if !skipCredentialPenalty {
+				p.recordEndpointError(endpoint.Name, "non_retryable_status")
 			}
 			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "non_retryable_status", "Response %d: %s", resp.StatusCode, errMsg)
 			logger.DebugLog("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, errMsg)

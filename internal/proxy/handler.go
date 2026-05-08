@@ -126,44 +126,56 @@ func (p *Proxy) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 
 // UpdateConfig updates the proxy configuration
 func (p *Proxy) UpdateConfig(cfg *config.Config) error {
+	return p.UpdateConfigPreservingCurrentName(cfg, p.GetCurrentEndpointName())
+}
+
+// UpdateConfigPreservingCurrentName updates the proxy configuration while
+// preserving the named default endpoint when it is still enabled.
+func (p *Proxy) UpdateConfigPreservingCurrentName(cfg *config.Config, currentEndpointName string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+
+	oldEndpoints := cloneEndpoints(p.configEndpointsSnapshot)
 
 	// Save current endpoint name
-	var currentEndpointName string
-	if p.config != nil {
-		endpoints := p.getEnabledEndpoints()
-		if len(endpoints) > 0 && p.currentIndex < len(endpoints) {
-			currentEndpointName = endpoints[p.currentIndex].Name
-		}
+	previousEndpointName := currentEndpointName
+	if previousEndpointName == "" && p.config != nil {
+		previousEndpointName = p.getCurrentEndpointLocked().Name
 	}
 
 	p.config = cfg
 	p.resolver = NewEndpointResolverWithFunc(cfg.GetEndpoints)
+	newEndpointsSnapshot := cfg.GetEndpoints()
 
 	// Try to find the previous current endpoint in new config
 	newEndpoints := p.getEnabledEndpoints()
-	if currentEndpointName != "" && len(newEndpoints) > 0 {
+	newEndpointName := ""
+	if previousEndpointName != "" && len(newEndpoints) > 0 {
 		found := false
 		for i, ep := range newEndpoints {
-			if ep.Name == currentEndpointName {
+			if ep.Name == previousEndpointName {
 				p.currentIndex = i
 				found = true
-				logger.Debug("[CONFIG UPDATE] Preserved current endpoint: %s at index %d", currentEndpointName, i)
+				newEndpointName = ep.Name
+				logger.Debug("[CONFIG UPDATE] Preserved current endpoint: %s at index %d", previousEndpointName, i)
 				break
 			}
 		}
 		if !found {
 			p.currentIndex = 0
-			logger.Debug("[CONFIG UPDATE] Current endpoint '%s' not found, reset to index 0", currentEndpointName)
+			if len(newEndpoints) > 0 {
+				newEndpointName = newEndpoints[0].Name
+			}
+			logger.Debug("[CONFIG UPDATE] Current endpoint '%s' not found, reset to index 0", previousEndpointName)
 		}
 	} else {
 		p.currentIndex = 0
+		if len(newEndpoints) > 0 {
+			newEndpointName = newEndpoints[0].Name
+		}
 	}
 
-	// Clear endpoint cooldowns so manual config changes take effect immediately.
-	p.clearEndpointCooldowns()
-	logger.Debug("[CONFIG UPDATE] Cleared endpoint cooldowns")
+	p.clearEndpointCooldownsForConfigChange(oldEndpoints, newEndpointsSnapshot)
+	p.configEndpointsSnapshot = cloneEndpoints(newEndpointsSnapshot)
 
 	// Clear models cache to force refresh with new endpoints
 	if p.modelsCache != nil {
@@ -172,5 +184,7 @@ func (p *Proxy) UpdateConfig(cfg *config.Config) error {
 	}
 
 	logger.Info("Configuration updated: %d endpoints configured", len(cfg.GetEndpoints()))
+	p.mu.Unlock()
+	p.emitCurrentEndpointChanged(previousEndpointName, newEndpointName, "config_update")
 	return nil
 }

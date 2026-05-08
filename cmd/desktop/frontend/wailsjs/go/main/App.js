@@ -142,6 +142,10 @@ export function GetCurrentEndpoint() {
   return window['go']['main']['App']['GetCurrentEndpoint']();
 }
 
+export function GetEndpointRuntimeStatuses() {
+  return window['go']['main']['App']['GetEndpointRuntimeStatuses']();
+}
+
 export function GetDownloadProgress() {
   return window['go']['main']['App']['GetDownloadProgress']();
 }

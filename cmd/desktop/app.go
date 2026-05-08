@@ -146,6 +146,12 @@ func (a *App) startup(ctx context.Context) {
 	a.proxy.SetOnEndpointSuccess(func(endpointName string) {
 		runtime.EventsEmit(ctx, "endpoint:success", endpointName)
 	})
+	a.proxy.SetOnCurrentEndpointChanged(func(event proxy.EndpointCurrentEvent) {
+		runtime.EventsEmit(ctx, "endpoint:current", event)
+	})
+	a.proxy.SetOnEndpointRuntimeChanged(func(event proxy.EndpointRuntimeEvent) {
+		runtime.EventsEmit(ctx, "endpoint:runtime", event)
+	})
 
 	// Set callback for stats updates to emit real-time events with 4-period data
 	a.proxy.GetStats().SetOnStatsUpdated(func(endpointName string, endpointPeriods, totalPeriods map[string]interface{}) {
@@ -411,6 +417,22 @@ func (a *App) ReorderEndpoints(names []string) error { return a.endpoint.Reorder
 func (a *App) GetCurrentEndpoint() string            { return a.endpoint.GetCurrentEndpoint() }
 func (a *App) SwitchToEndpoint(endpointName string) error {
 	return a.endpoint.SwitchToEndpoint(endpointName)
+}
+func (a *App) GetEndpointRuntimeStatuses() string {
+	if a.storage == nil {
+		return "{}"
+	}
+	statuses, err := a.storage.GetEndpointRuntimeStatuses()
+	if err != nil {
+		logger.Warn("Failed to get endpoint runtime statuses: %v", err)
+		return "{}"
+	}
+	data, err := json.Marshal(statuses)
+	if err != nil {
+		logger.Warn("Failed to marshal endpoint runtime statuses: %v", err)
+		return "{}"
+	}
+	return string(data)
 }
 func (a *App) TestEndpoint(index int) string      { return a.endpoint.TestEndpoint(index) }
 func (a *App) TestEndpointLight(index int) string { return a.endpoint.TestEndpointLight(index) }

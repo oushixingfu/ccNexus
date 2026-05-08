@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"strings"
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
@@ -49,6 +50,59 @@ func (p *Proxy) clearEndpointCooldowns() {
 	p.cooldownMu.Lock()
 	defer p.cooldownMu.Unlock()
 	p.endpointCooldowns = make(map[string]endpointCooldown)
+}
+
+func (p *Proxy) clearEndpointCooldownsForConfigChange(oldEndpoints []config.Endpoint, newEndpoints []config.Endpoint) {
+	if len(oldEndpoints) == 0 {
+		return
+	}
+
+	oldByName := make(map[string]config.Endpoint, len(oldEndpoints))
+	for _, endpoint := range oldEndpoints {
+		oldByName[endpoint.Name] = endpoint
+	}
+
+	newByName := make(map[string]config.Endpoint, len(newEndpoints))
+	for _, endpoint := range newEndpoints {
+		newByName[endpoint.Name] = endpoint
+	}
+
+	toClear := make([]string, 0)
+	for oldName := range oldByName {
+		if _, ok := newByName[oldName]; !ok {
+			toClear = append(toClear, oldName)
+		}
+	}
+	for newName, newEndpoint := range newByName {
+		oldEndpoint, ok := oldByName[newName]
+		if !ok {
+			continue
+		}
+		if endpointCooldownIdentityChanged(oldEndpoint, newEndpoint) {
+			toClear = append(toClear, newName)
+		}
+	}
+	if len(toClear) == 0 {
+		return
+	}
+
+	p.cooldownMu.Lock()
+	for _, name := range toClear {
+		delete(p.endpointCooldowns, name)
+	}
+	p.cooldownMu.Unlock()
+
+	logger.Debug("[CONFIG UPDATE] Cleared endpoint cooldowns for changed endpoints: %v", toClear)
+}
+
+func endpointCooldownIdentityChanged(oldEndpoint config.Endpoint, newEndpoint config.Endpoint) bool {
+	return strings.TrimSpace(oldEndpoint.APIUrl) != strings.TrimSpace(newEndpoint.APIUrl) ||
+		strings.TrimSpace(oldEndpoint.APIKey) != strings.TrimSpace(newEndpoint.APIKey) ||
+		config.NormalizeAuthMode(oldEndpoint.AuthMode) != config.NormalizeAuthMode(newEndpoint.AuthMode) ||
+		strings.TrimSpace(strings.ToLower(oldEndpoint.Transformer)) != strings.TrimSpace(strings.ToLower(newEndpoint.Transformer)) ||
+		strings.TrimSpace(oldEndpoint.Model) != strings.TrimSpace(newEndpoint.Model) ||
+		strings.TrimSpace(oldEndpoint.Thinking) != strings.TrimSpace(newEndpoint.Thinking) ||
+		oldEndpoint.ForceStream != newEndpoint.ForceStream
 }
 
 func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs requestObservability) []config.Endpoint {

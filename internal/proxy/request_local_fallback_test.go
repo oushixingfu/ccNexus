@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/storage"
 )
 
 func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *testing.T) {
@@ -37,6 +40,10 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 		failoverPolicyTestEndpoint("Primary", primary.URL),
 		failoverPolicyTestEndpoint("Fallback", fallback.URL),
 	}, primary.Client())
+	var runtimeEvents []EndpointRuntimeEvent
+	p.SetOnEndpointRuntimeChanged(func(event EndpointRuntimeEvent) {
+		runtimeEvents = append(runtimeEvents, event)
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -60,6 +67,12 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 	if got := p.GetCurrentEndpointName(); got != "Primary" {
 		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
 	}
+	if !hasRuntimeFailureEvent(runtimeEvents, "Primary", "rate_limited") {
+		t.Fatalf("expected Primary failure runtime event, got %#v", runtimeEvents)
+	}
+	if !hasRuntimeSuccessEvent(runtimeEvents, "Fallback") {
+		t.Fatalf("expected Fallback success runtime event, got %#v", runtimeEvents)
+	}
 
 	logs := joinedProxyLogs()
 	if !strings.Contains(logs, "failover_scope=request_local") {
@@ -68,6 +81,29 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 	if strings.Contains(logs, "[SWITCH]") {
 		t.Fatalf("expected no global switch log during request-local fallback, got logs:\n%s", logs)
 	}
+}
+
+func hasRuntimeFailureEvent(events []EndpointRuntimeEvent, endpointName, reason string) bool {
+	for _, event := range events {
+		if event.Event == "failure" &&
+			event.EndpointName == endpointName &&
+			event.LastFailureAt != nil &&
+			event.LastFailureReason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRuntimeSuccessEvent(events []EndpointRuntimeEvent, endpointName string) bool {
+	for _, event := range events {
+		if event.Event == "success" &&
+			event.EndpointName == endpointName &&
+			event.LastSuccessAt != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRequestLocalFallbackDoesNotAffectNextRequest(t *testing.T) {
@@ -117,7 +153,6 @@ func TestRequestLocalFallbackDoesNotAffectNextRequest(t *testing.T) {
 		t.Fatalf("expected req-b to still start on Primary after req-a fallback, got %q", got)
 	}
 	if got := primaryHitsByRequest["req-b"]; got != 1 {
-		t.Fatalf("expected req-b to hit Primary once, got %d", got)
 		t.Fatalf("expected req-b to hit Primary once, got %d", got)
 	}
 	if got := p.GetCurrentEndpointName(); got != "Primary" {
@@ -245,6 +280,269 @@ func TestConcurrentRequestLocalFallbackDoesNotAffectOtherRequest(t *testing.T) {
 	if strings.Contains(logs, "[SWITCH]") {
 		t.Fatalf("expected no global switch log during concurrent request-local fallback, got logs:\n%s", logs)
 	}
+}
+
+func TestRequestLocalFallbackStreamingEndpointCanCompleteWhenNotGlobalCurrent(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"用户额度不足, 剩余额度: ＄0.000000","type":"new_api_error","code":"insufficient_user_quota"}}`))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7},"output":[]}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer fallback.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", primary.URL),
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerCCNexusRequestID, "req-stream-local-fallback")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected stream fallback to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if fallbackHits != 1 {
+		t.Fatalf("expected fallback stream endpoint to be hit once, got %d", fallbackHits)
+	}
+	if got := p.GetCurrentEndpointName(); got != "Primary" {
+		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
+	}
+	if !strings.Contains(rec.Body.String(), "response.completed") {
+		t.Fatalf("expected fallback stream body to reach client, got %q", rec.Body.String())
+	}
+	logs := joinedProxyLogs()
+	if strings.Contains(logs, "Endpoint switched during streaming") {
+		t.Fatalf("did not expect request-local fallback stream to be terminated as switched, logs:\n%s", logs)
+	}
+}
+
+func TestClientCanceledRequestDoesNotFailoverOrRecordFailureEvent(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-primary","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
+	}))
+	defer fallback.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", primary.URL),
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+	var failureEvents int
+	p.SetOnEndpointRuntimeChanged(func(event EndpointRuntimeEvent) {
+		if event.Event == "failure" {
+			failureEvents++
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerCCNexusRequestID, "req-client-canceled")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if fallbackHits != 0 {
+		t.Fatalf("expected client cancellation not to fail over, fallback hits=%d", fallbackHits)
+	}
+	if failureEvents != 0 {
+		t.Fatalf("expected client cancellation not to emit failure events, got %d", failureEvents)
+	}
+	logs := joinedProxyLogs()
+	if strings.Contains(logs, "failover_scope=request_local") {
+		t.Fatalf("expected no failover after client cancellation, logs:\n%s", logs)
+	}
+	_ = primaryHits
+}
+
+func TestForceStreamAggregationClientCancelStopsWithoutFailover(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	primaryStreaming := make(chan struct{})
+	var primaryStreamingOnce sync.Once
+	releasePrimary := make(chan struct{})
+	var releasePrimaryOnce sync.Once
+	t.Cleanup(func() {
+		releasePrimaryOnce.Do(func() { close(releasePrimary) })
+	})
+
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		primaryStreamingOnce.Do(func() { close(primaryStreaming) })
+		select {
+		case <-r.Context().Done():
+		case <-releasePrimary:
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
+	}))
+	defer fallback.Close()
+
+	forceStreamPrimary := failoverPolicyTestEndpoint("Primary", primary.URL)
+	forceStreamPrimary.ForceStream = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		forceStreamPrimary,
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+	var failureEvents int
+	p.SetOnEndpointRuntimeChanged(func(event EndpointRuntimeEvent) {
+		if event.Event == "failure" {
+			failureEvents++
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerCCNexusRequestID, "req-force-stream-client-canceled")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.handleProxy(rec, req)
+	}()
+
+	select {
+	case <-primaryStreaming:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for primary force-stream response")
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for canceled force-stream request")
+	}
+
+	if primaryHits != 1 {
+		t.Fatalf("expected primary to be hit once, got %d", primaryHits)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("expected client cancellation during aggregation not to fail over, fallback hits=%d", fallbackHits)
+	}
+	if failureEvents != 0 {
+		t.Fatalf("expected client cancellation during aggregation not to emit failure events, got %d", failureEvents)
+	}
+	logs := joinedProxyLogs()
+	if strings.Contains(logs, "failover_scope=request_local") {
+		t.Fatalf("expected no failover after aggregation cancellation, logs:\n%s", logs)
+	}
+	if strings.Contains(logs, "aggregate_streaming_failed") {
+		t.Fatalf("expected aggregation cancellation not to be recorded as aggregate failure, logs:\n%s", logs)
+	}
+}
+
+func TestClientCanceledRequestDoesNotPersistFailureStatus(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-primary","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[]}`))
+	}))
+	defer fallback.Close()
+
+	store, err := storage.NewSQLiteStorage(filepath.Join(t.TempDir(), "ccnexus.db"))
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer store.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", primary.URL),
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	})
+	p := New(cfg, &noopStatsStorage{}, store, "test-device")
+	p.httpClient = primary.Client()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerCCNexusRequestID, "req-client-canceled-runtime")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if fallbackHits != 0 {
+		t.Fatalf("expected client cancellation not to fail over, fallback hits=%d", fallbackHits)
+	}
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	status := statuses["Primary"]
+	if status == nil {
+		t.Fatal("expected Primary attempt status to be recorded")
+	}
+	if status.LastAttemptAt == nil {
+		t.Fatal("expected client-canceled request to record an attempt")
+	}
+	if status.LastFailureAt != nil || status.LastFailureReason != "" {
+		t.Fatalf("expected client cancellation not to persist failure status, got %#v", status)
+	}
+	_ = primaryHits
 }
 
 func TestRateLimitedRetryUsesBackoffBeforeSameEndpointRetry(t *testing.T) {

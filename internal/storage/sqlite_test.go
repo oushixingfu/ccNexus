@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestMigrateDeepSeekThinkingDefaultRunsOnce(t *testing.T) {
@@ -92,5 +93,73 @@ func TestMigrateDeepSeekThinkingDefaultRunsOnce(t *testing.T) {
 		if ep.Name == "deepseek-old" && ep.Thinking != "off" {
 			t.Fatalf("expected explicit DeepSeek off to survive after marker, got %q", ep.Thinking)
 		}
+	}
+}
+
+func TestEndpointRuntimeStatusPersistsAcrossReopen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ccnexus.db")
+	store, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+
+	successAt := time.Date(2026, 5, 8, 9, 10, 11, 0, time.UTC)
+	attemptAt := successAt.Add(-time.Second)
+	status, err := store.UpsertEndpointRuntimeStatus("Primary", EndpointRuntimeStatusPatch{
+		LastSuccessAt: &successAt,
+		LastAttemptAt: &attemptAt,
+	})
+	if err != nil {
+		t.Fatalf("upsert success status: %v", err)
+	}
+	if status.LastSuccessAt == nil || !status.LastSuccessAt.Equal(successAt) {
+		t.Fatalf("expected success time %s, got %#v", successAt, status.LastSuccessAt)
+	}
+
+	failureAt := successAt.Add(time.Minute)
+	reason := "upstream_5xx"
+	status, err = store.UpsertEndpointRuntimeStatus("Primary", EndpointRuntimeStatusPatch{
+		LastFailureAt:     &failureAt,
+		LastFailureReason: &reason,
+	})
+	if err != nil {
+		t.Fatalf("upsert failure status: %v", err)
+	}
+	if status.LastSuccessAt == nil || !status.LastSuccessAt.Equal(successAt) {
+		t.Fatalf("expected success time to be preserved, got %#v", status.LastSuccessAt)
+	}
+	if status.LastFailureAt == nil || !status.LastFailureAt.Equal(failureAt) {
+		t.Fatalf("expected failure time %s, got %#v", failureAt, status.LastFailureAt)
+	}
+	if status.LastFailureReason != reason {
+		t.Fatalf("expected failure reason %q, got %q", reason, status.LastFailureReason)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close storage: %v", err)
+	}
+
+	store, err = NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("reopen storage: %v", err)
+	}
+	defer store.Close()
+
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	status = statuses["Primary"]
+	if status == nil {
+		t.Fatalf("expected Primary runtime status after reopen")
+	}
+	if status.LastSuccessAt == nil || !status.LastSuccessAt.Equal(successAt) {
+		t.Fatalf("expected persisted success time %s, got %#v", successAt, status.LastSuccessAt)
+	}
+	if status.LastFailureAt == nil || !status.LastFailureAt.Equal(failureAt) {
+		t.Fatalf("expected persisted failure time %s, got %#v", failureAt, status.LastFailureAt)
+	}
+	if status.LastFailureReason != reason {
+		t.Fatalf("expected persisted failure reason %q, got %q", reason, status.LastFailureReason)
 	}
 }

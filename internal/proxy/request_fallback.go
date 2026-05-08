@@ -30,6 +30,46 @@ func newRequestEndpointPlan(endpoints []config.Endpoint, startIndex int) *reques
 	}
 }
 
+func newRequestEndpointPlanForCurrent(available []config.Endpoint, allEnabled []config.Endpoint, currentName string) *requestEndpointPlan {
+	if len(available) == 0 {
+		return newRequestEndpointPlan(available, 0)
+	}
+
+	if currentName == "" {
+		return newRequestEndpointPlan(available, 0)
+	}
+
+	currentIndex := indexEndpointByName(allEnabled, currentName)
+	if currentIndex < 0 {
+		if availableIndex := indexEndpointByName(available, currentName); availableIndex >= 0 {
+			return newRequestEndpointPlan(available, availableIndex)
+		}
+		return newRequestEndpointPlan(available, 0)
+	}
+
+	for offset := 0; offset < len(allEnabled); offset++ {
+		candidate := allEnabled[(currentIndex+offset)%len(allEnabled)]
+		if availableIndex := indexEndpointByName(available, candidate.Name); availableIndex >= 0 {
+			return newRequestEndpointPlan(available, availableIndex)
+		}
+	}
+
+	return newRequestEndpointPlan(available, 0)
+}
+
+func indexEndpointByName(endpoints []config.Endpoint, name string) int {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return -1
+	}
+	for i, endpoint := range endpoints {
+		if endpoint.Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 func (p *requestEndpointPlan) Current() config.Endpoint {
 	if p == nil || len(p.endpoints) == 0 {
 		return config.Endpoint{}

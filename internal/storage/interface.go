@@ -88,6 +88,22 @@ type CredentialUsage struct {
 	UpdatedAt    *time.Time `json:"updatedAt,omitempty"`
 }
 
+type EndpointRuntimeStatus struct {
+	EndpointName      string     `json:"endpointName"`
+	LastSuccessAt     *time.Time `json:"lastSuccessAt,omitempty"`
+	LastFailureAt     *time.Time `json:"lastFailureAt,omitempty"`
+	LastFailureReason string     `json:"lastFailureReason,omitempty"`
+	LastAttemptAt     *time.Time `json:"lastAttemptAt,omitempty"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+}
+
+type EndpointRuntimeStatusPatch struct {
+	LastSuccessAt     *time.Time
+	LastFailureAt     *time.Time
+	LastFailureReason *string
+	LastAttemptAt     *time.Time
+}
+
 type TokenPoolStats struct {
 	Total       int `json:"total"`
 	Active      int `json:"active"`
@@ -136,6 +152,8 @@ type Storage interface {
 	UpsertCredentialRateLimits(credentialID int64, data *CodexRateLimitsData, status, errMsg string, updatedAt time.Time) error
 	GetCredentialUsageByEndpoint(endpointName string) (map[int64]*CredentialUsage, error)
 	UpsertCredentialUsage(credentialID int64, endpointName string, requestsDelta, errorsDelta, inputTokensDelta, outputTokensDelta int, updatedAt time.Time) error
+	UpsertEndpointRuntimeStatus(endpointName string, patch EndpointRuntimeStatusPatch) (*EndpointRuntimeStatus, error)
+	GetEndpointRuntimeStatuses() (map[string]*EndpointRuntimeStatus, error)
 
 	// Stats
 	RecordDailyStat(stat *DailyStat) error

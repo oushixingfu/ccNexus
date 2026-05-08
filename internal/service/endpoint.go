@@ -171,13 +171,14 @@ func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transforme
 	config.ApplyEndpointAuthModeRules(&newEndpoint)
 	endpoints = append(endpoints, newEndpoint)
 
+	currentEndpointName := e.proxy.GetCurrentEndpointName()
 	e.config.UpdateEndpoints(endpoints)
 
 	if err := e.config.Validate(); err != nil {
 		return err
 	}
 
-	if err := e.proxy.UpdateConfig(e.config); err != nil {
+	if err := e.proxy.UpdateConfigPreservingCurrentName(e.config, currentEndpointName); err != nil {
 		return err
 	}
 
@@ -206,6 +207,7 @@ func (e *EndpointService) RemoveEndpoint(index int) error {
 	}
 
 	removedName := endpoints[index].Name
+	currentEndpointName := e.proxy.GetCurrentEndpointName()
 	endpoints = append(endpoints[:index], endpoints[index+1:]...)
 	e.config.UpdateEndpoints(endpoints)
 
@@ -215,7 +217,7 @@ func (e *EndpointService) RemoveEndpoint(index int) error {
 		}
 	}
 
-	if err := e.proxy.UpdateConfig(e.config); err != nil {
+	if err := e.proxy.UpdateConfigPreservingCurrentName(e.config, currentEndpointName); err != nil {
 		return err
 	}
 
@@ -239,6 +241,8 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 	}
 
 	oldName := endpoints[index].Name
+	currentEndpointName := e.proxy.GetCurrentEndpointName()
+	preserveEndpointName := currentEndpointName
 
 	if oldName != name {
 		for i, ep := range endpoints {
@@ -275,6 +279,9 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 	}
 	config.ApplyEndpointAuthModeRules(&updatedEndpoint)
 	endpoints[index] = updatedEndpoint
+	if oldName == currentEndpointName {
+		preserveEndpointName = updatedEndpoint.Name
+	}
 
 	e.config.UpdateEndpoints(endpoints)
 
@@ -282,7 +289,7 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 		return err
 	}
 
-	if err := e.proxy.UpdateConfig(e.config); err != nil {
+	if err := e.proxy.UpdateConfigPreservingCurrentName(e.config, preserveEndpointName); err != nil {
 		return err
 	}
 
@@ -319,10 +326,11 @@ func (e *EndpointService) ToggleEndpoint(index int, enabled bool) error {
 	}
 
 	endpointName := endpoints[index].Name
+	currentEndpointName := e.proxy.GetCurrentEndpointName()
 	endpoints[index].Enabled = enabled
 	e.config.UpdateEndpoints(endpoints)
 
-	if err := e.proxy.UpdateConfig(e.config); err != nil {
+	if err := e.proxy.UpdateConfigPreservingCurrentName(e.config, currentEndpointName); err != nil {
 		return err
 	}
 
@@ -363,6 +371,7 @@ func (e *EndpointService) ReorderEndpoints(names []string) error {
 		endpointMap[ep.Name] = ep
 	}
 
+	currentEndpointName := e.proxy.GetCurrentEndpointName()
 	newEndpoints := make([]config.Endpoint, 0, len(names))
 	for _, name := range names {
 		ep, exists := endpointMap[name]
@@ -378,7 +387,7 @@ func (e *EndpointService) ReorderEndpoints(names []string) error {
 		return err
 	}
 
-	if err := e.proxy.UpdateConfig(e.config); err != nil {
+	if err := e.proxy.UpdateConfigPreservingCurrentName(e.config, currentEndpointName); err != nil {
 		return err
 	}
 

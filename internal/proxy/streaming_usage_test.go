@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,7 +64,8 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	in, out, _ := p.handleStreamingResponse(
+	result := p.handleStreamingResponse(
+		context.Background(),
 		rec,
 		resp,
 		endpoint,
@@ -74,6 +76,7 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 		[]byte(`{}`),
 		0,
 	)
+	in, out := result.InputTokens, result.OutputTokens
 
 	if in != 7 || out != 5 {
 		t.Fatalf("expected tokens from original stream usage in=7 out=5, got in=%d out=%d", in, out)

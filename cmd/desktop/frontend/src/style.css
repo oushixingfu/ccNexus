@@ -1655,6 +1655,39 @@ body {
     top: -1px;
 }
 
+.endpoint-status-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.runtime-badge {
+    color: white;
+    padding: 3px 7px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: normal;
+    line-height: 1.2;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.runtime-badge-active {
+    background: #0ea5e9;
+}
+
+.runtime-badge-success {
+    background: #16a34a;
+}
+
+.runtime-badge-failure {
+    background: #dc2626;
+}
+
 /* Disabled badge */
 .disabled-badge {
     background: #999;
@@ -4527,4 +4560,3 @@ body {
         opacity: 0.8;
     }
 }
-

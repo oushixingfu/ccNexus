@@ -437,28 +437,14 @@ func (h *Handler) handleCurrentEndpoint(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	endpoints := h.config.GetEndpoints()
-	if len(endpoints) == 0 {
+	currentEndpoint := h.proxy.GetCurrentEndpointName()
+	if currentEndpoint == "" {
 		WriteError(w, http.StatusNotFound, "No endpoints configured")
 		return
 	}
 
-	// Get enabled endpoints
-	var enabledEndpoints []config.Endpoint
-	for _, ep := range endpoints {
-		if ep.Enabled {
-			enabledEndpoints = append(enabledEndpoints, ep)
-		}
-	}
-
-	if len(enabledEndpoints) == 0 {
-		WriteError(w, http.StatusNotFound, "No enabled endpoints")
-		return
-	}
-
-	// Return first enabled endpoint as current
 	WriteSuccess(w, map[string]interface{}{
-		"name": enabledEndpoints[0].Name,
+		"name": currentEndpoint,
 	})
 }
 

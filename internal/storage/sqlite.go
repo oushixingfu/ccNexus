@@ -149,6 +149,7 @@ func (s *SQLiteStorage) initSchema() error {
 		last_success_at DATETIME,
 		last_failure_at DATETIME,
 		last_failure_reason TEXT,
+		last_failure_status_code INTEGER DEFAULT 0,
 		last_attempt_at DATETIME,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -201,6 +202,9 @@ func (s *SQLiteStorage) initSchema() error {
 		return err
 	}
 	if err := s.migrateForceStream(); err != nil {
+		return err
+	}
+	if err := s.migrateEndpointRuntimeFailureStatusCode(); err != nil {
 		return err
 	}
 
@@ -310,6 +314,23 @@ func (s *SQLiteStorage) migrateForceStream() error {
 	return err
 }
 
+func (s *SQLiteStorage) migrateEndpointRuntimeFailureStatusCode() error {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoint_runtime_status') WHERE name='last_failure_status_code'`).Scan(&count)
+	if err != nil {
+		return err
+	}
+
+	if count == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE endpoint_runtime_status ADD COLUMN last_failure_status_code INTEGER DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+
+	_, err = s.db.Exec(`UPDATE endpoint_runtime_status SET last_failure_status_code=0 WHERE last_failure_status_code IS NULL`)
+	return err
+}
+
 func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -399,19 +420,24 @@ func (s *SQLiteStorage) UpsertEndpointRuntimeStatus(endpointName string, patch E
 	if patch.LastFailureReason != nil {
 		lastFailureReason = *patch.LastFailureReason
 	}
+	var lastFailureStatusCode interface{}
+	if patch.LastFailureStatusCode != nil {
+		lastFailureStatusCode = *patch.LastFailureStatusCode
+	}
 
 	_, err := s.db.Exec(`
 		INSERT INTO endpoint_runtime_status (
-			endpoint_name, last_success_at, last_failure_at, last_failure_reason, last_attempt_at, updated_at
+			endpoint_name, last_success_at, last_failure_at, last_failure_reason, last_failure_status_code, last_attempt_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(endpoint_name) DO UPDATE SET
 			last_success_at=COALESCE(excluded.last_success_at, endpoint_runtime_status.last_success_at),
 			last_failure_at=COALESCE(excluded.last_failure_at, endpoint_runtime_status.last_failure_at),
 			last_failure_reason=COALESCE(excluded.last_failure_reason, endpoint_runtime_status.last_failure_reason),
+			last_failure_status_code=COALESCE(excluded.last_failure_status_code, endpoint_runtime_status.last_failure_status_code),
 			last_attempt_at=COALESCE(excluded.last_attempt_at, endpoint_runtime_status.last_attempt_at),
 			updated_at=CURRENT_TIMESTAMP
-	`, endpointName, patch.LastSuccessAt, patch.LastFailureAt, lastFailureReason, patch.LastAttemptAt)
+	`, endpointName, patch.LastSuccessAt, patch.LastFailureAt, lastFailureReason, lastFailureStatusCode, patch.LastAttemptAt)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +450,7 @@ func (s *SQLiteStorage) GetEndpointRuntimeStatuses() (map[string]*EndpointRuntim
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.Query(`
-		SELECT endpoint_name, last_success_at, last_failure_at, COALESCE(last_failure_reason, ''), last_attempt_at, updated_at
+		SELECT endpoint_name, last_success_at, last_failure_at, COALESCE(last_failure_reason, ''), COALESCE(last_failure_status_code, 0), last_attempt_at, updated_at
 		FROM endpoint_runtime_status
 	`)
 	if err != nil {
@@ -445,7 +471,7 @@ func (s *SQLiteStorage) GetEndpointRuntimeStatuses() (map[string]*EndpointRuntim
 
 func (s *SQLiteStorage) getEndpointRuntimeStatusLocked(endpointName string) (*EndpointRuntimeStatus, error) {
 	row := s.db.QueryRow(`
-		SELECT endpoint_name, last_success_at, last_failure_at, COALESCE(last_failure_reason, ''), last_attempt_at, updated_at
+		SELECT endpoint_name, last_success_at, last_failure_at, COALESCE(last_failure_reason, ''), COALESCE(last_failure_status_code, 0), last_attempt_at, updated_at
 		FROM endpoint_runtime_status
 		WHERE endpoint_name=?
 	`, endpointName)
@@ -466,6 +492,7 @@ func scanEndpointRuntimeStatus(scanner endpointRuntimeStatusScanner) (*EndpointR
 		&lastSuccessAt,
 		&lastFailureAt,
 		&status.LastFailureReason,
+		&status.LastFailureStatusCode,
 		&lastAttemptAt,
 		&updatedAt,
 	); err != nil {

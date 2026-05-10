@@ -69,7 +69,7 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 	if got := p.GetCurrentEndpointName(); got != "Primary" {
 		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
 	}
-	if !hasRuntimeFailureEvent(runtimeEvents, "Primary", "rate_limited") {
+	if !hasRuntimeFailureEvent(runtimeEvents, "Primary", "rate_limited", http.StatusInternalServerError) {
 		t.Fatalf("expected Primary failure runtime event, got %#v", runtimeEvents)
 	}
 	if !hasRuntimeSuccessEvent(runtimeEvents, "Fallback") {
@@ -85,12 +85,13 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 	}
 }
 
-func hasRuntimeFailureEvent(events []EndpointRuntimeEvent, endpointName, reason string) bool {
+func hasRuntimeFailureEvent(events []EndpointRuntimeEvent, endpointName, reason string, statusCode int) bool {
 	for _, event := range events {
 		if event.Event == "failure" &&
 			event.EndpointName == endpointName &&
 			event.LastFailureAt != nil &&
-			event.LastFailureReason == reason {
+			event.LastFailureReason == reason &&
+			event.LastFailureStatusCode == statusCode {
 			return true
 		}
 	}
@@ -106,6 +107,30 @@ func hasRuntimeSuccessEvent(events []EndpointRuntimeEvent, endpointName string) 
 		}
 	}
 	return false
+}
+
+func TestEndpointRuntimeEventClearsStatusCodeForNonHTTPFailure(t *testing.T) {
+	p := &Proxy{
+		stats:          NewStats(&noopStatsStorage{}, "test-device"),
+		activeRequests: make(map[string]int),
+	}
+	var runtimeEvents []EndpointRuntimeEvent
+	p.SetOnEndpointRuntimeChanged(func(event EndpointRuntimeEvent) {
+		runtimeEvents = append(runtimeEvents, event)
+	})
+
+	p.recordEndpointError("Primary", "rate_limited", http.StatusTooManyRequests)
+	p.recordEndpointError("Primary", "transient_network_error")
+
+	if len(runtimeEvents) != 2 {
+		t.Fatalf("expected two runtime events, got %#v", runtimeEvents)
+	}
+	if runtimeEvents[0].LastFailureReason != "rate_limited" || runtimeEvents[0].LastFailureStatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected HTTP failure status on first event, got %#v", runtimeEvents[0])
+	}
+	if runtimeEvents[1].LastFailureReason != "transient_network_error" || runtimeEvents[1].LastFailureStatusCode != 0 {
+		t.Fatalf("expected non-http failure to clear status code, got %#v", runtimeEvents[1])
+	}
 }
 
 func TestRequestLocalFallbackDoesNotAffectNextRequest(t *testing.T) {

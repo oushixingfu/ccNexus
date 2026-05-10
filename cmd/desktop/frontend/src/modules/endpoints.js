@@ -142,6 +142,22 @@ function formatRuntimeTime(value) {
     });
 }
 
+function formatFailureCode(status) {
+    const reason = String(status.lastFailureReason || '').trim();
+    const statusCode = Number(status.lastFailureStatusCode || 0);
+
+    if (reason && statusCode > 0) {
+        return `${reason}/${statusCode}`;
+    }
+    if (reason) {
+        return reason;
+    }
+    if (statusCode > 0) {
+        return `HTTP ${statusCode}`;
+    }
+    return '';
+}
+
 function renderDefaultEndpointControl(endpointName, enabled) {
     const safeName = escapeHtml(endpointName);
     const isDefaultEndpoint = endpointName === currentEndpointName;
@@ -166,9 +182,10 @@ function renderCompactDefaultEndpointControl(endpointName, enabled) {
     return '<span class="btn btn-primary compact-badge-btn compact-badge-disabled">' + t('endpoints.disabled') + '</span>';
 }
 
-function renderEndpointRuntimeBadges(endpointName) {
+function renderEndpointRuntimeBadges(endpointName, viewMode = 'detail') {
     const status = endpointRuntimeStatuses[endpointName] || {};
     const activeCount = endpointActiveCounts[endpointName] || 0;
+    const isCompact = viewMode === 'compact';
     const badges = [];
 
     if (activeCount > 0) {
@@ -185,8 +202,11 @@ function renderEndpointRuntimeBadges(endpointName) {
 
     const failureTime = formatRuntimeTime(status.lastFailureAt);
     if (failureTime) {
-        const reason = status.lastFailureReason ? `${t('endpoints.failureReason')}: ${status.lastFailureReason}` : t('endpoints.recentFailure');
-        badges.push(`<span class="runtime-badge runtime-badge-failure" title="${escapeHtml(reason)}">${t('endpoints.recentFailure')} ${failureTime}</span>`);
+        const failureCode = formatFailureCode(status);
+        const title = failureCode ? `${t('endpoints.failureReason')}: ${failureCode}` : t('endpoints.recentFailure');
+        const labelPrefix = isCompact ? t('endpoints.failureShort') : t('endpoints.recentFailure');
+        const codeLabel = failureCode ? ` · ${escapeHtml(failureCode)}` : '';
+        badges.push(`<span class="runtime-badge runtime-badge-failure" title="${escapeHtml(title)}">${labelPrefix} ${failureTime}${codeLabel}</span>`);
     }
 
     return badges.join('');
@@ -195,7 +215,8 @@ function renderEndpointRuntimeBadges(endpointName) {
 function updateRuntimeStatusSlot(endpointName) {
     document.querySelectorAll('.endpoint-runtime-slot').forEach(slot => {
         if (slot.dataset.name === endpointName) {
-            slot.innerHTML = renderEndpointRuntimeBadges(endpointName);
+            const viewMode = slot.classList.contains('compact-runtime-slot') ? 'compact' : 'detail';
+            slot.innerHTML = renderEndpointRuntimeBadges(endpointName, viewMode);
         }
     });
 }
@@ -388,7 +409,7 @@ export async function renderEndpoints(endpoints) {
                     ${ep.name}
                     ${!enabled ? '<span class="disabled-badge">' + t('endpoints.disabled') + '</span>' : ''}
                     <span class="endpoint-default-slot" data-name="${escapeHtml(ep.name)}" data-enabled="${enabled ? 'true' : 'false'}" data-view="detail">${renderDefaultEndpointControl(ep.name, enabled)}</span>
-                    <span class="endpoint-runtime-slot endpoint-status-badges" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name)}</span>
+                    <span class="endpoint-runtime-slot endpoint-status-badges" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name, 'detail')}</span>
                 </h3>
                 <p style="display: flex; align-items: center; gap: 8px; min-width: 0;"><span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">🌐 ${ep.apiUrl}</span> <button class="copy-btn" data-copy="${ep.apiUrl}" aria-label="${t('endpoints.copy')}" title="${t('endpoints.copy')}"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em"><path d="M7 4c0-1.1.9-2 2-2h11a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-1V8c0-2-1-3-3-3H7V4Z" fill="currentColor"></path><path d="M5 7a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h10a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H5Z" fill="currentColor"></path></svg></button></p>
                 ${authMode === 'api_key'
@@ -1677,12 +1698,17 @@ export function initEndpointSuccessListener() {
                 return;
             }
             endpointActiveCounts[endpointName] = Number(event.activeCount || 0);
+            const hasFailureStatusCode = Object.prototype.hasOwnProperty.call(event, 'lastFailureStatusCode');
+            const currentFailureStatusCode = Number(endpointRuntimeStatuses[endpointName]?.lastFailureStatusCode || 0);
             endpointRuntimeStatuses[endpointName] = {
                 ...(endpointRuntimeStatuses[endpointName] || {}),
                 endpointName,
                 lastSuccessAt: event.lastSuccessAt || endpointRuntimeStatuses[endpointName]?.lastSuccessAt,
                 lastFailureAt: event.lastFailureAt || endpointRuntimeStatuses[endpointName]?.lastFailureAt,
                 lastFailureReason: event.lastFailureReason || endpointRuntimeStatuses[endpointName]?.lastFailureReason,
+                lastFailureStatusCode: hasFailureStatusCode
+                    ? Number(event.lastFailureStatusCode || 0)
+                    : (event.event === 'failure' ? 0 : currentFailureStatusCode),
                 lastAttemptAt: event.lastAttemptAt || endpointRuntimeStatuses[endpointName]?.lastAttemptAt
             };
             if (endpointActiveCounts[endpointName] <= 0) {
@@ -1783,7 +1809,7 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
             <span class="compact-status" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
             <span class="compact-name" title="${ep.name}">${ep.name}</span>
             <span class="endpoint-default-slot compact-default-slot" data-name="${escapeHtml(ep.name)}" data-enabled="${enabled ? 'true' : 'false'}" data-view="compact">${renderCompactDefaultEndpointControl(ep.name, enabled)}</span>
-            <span class="endpoint-runtime-slot compact-runtime-slot" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name)}</span>
+            <span class="endpoint-runtime-slot compact-runtime-slot" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name, 'compact')}</span>
             <span class="compact-url" title="${ep.apiUrl}"><span class="compact-url-icon">🌐</span>${displayUrl}</span>
             <span class="compact-transformer">🔄 ${transformer}</span>
             <span class="compact-stats" title="${statsTooltip}">📊 ${stats.requests} | 🎯 ${formatTokens(stats.inputTokens + stats.outputTokens)}</span>

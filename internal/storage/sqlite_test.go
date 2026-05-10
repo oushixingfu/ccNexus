@@ -118,9 +118,11 @@ func TestEndpointRuntimeStatusPersistsAcrossReopen(t *testing.T) {
 
 	failureAt := successAt.Add(time.Minute)
 	reason := "upstream_5xx"
+	statusCode := 500
 	status, err = store.UpsertEndpointRuntimeStatus("Primary", EndpointRuntimeStatusPatch{
-		LastFailureAt:     &failureAt,
-		LastFailureReason: &reason,
+		LastFailureAt:         &failureAt,
+		LastFailureReason:     &reason,
+		LastFailureStatusCode: &statusCode,
 	})
 	if err != nil {
 		t.Fatalf("upsert failure status: %v", err)
@@ -133,6 +135,9 @@ func TestEndpointRuntimeStatusPersistsAcrossReopen(t *testing.T) {
 	}
 	if status.LastFailureReason != reason {
 		t.Fatalf("expected failure reason %q, got %q", reason, status.LastFailureReason)
+	}
+	if status.LastFailureStatusCode != statusCode {
+		t.Fatalf("expected failure status code %d, got %d", statusCode, status.LastFailureStatusCode)
 	}
 
 	if err := store.Close(); err != nil {
@@ -161,5 +166,82 @@ func TestEndpointRuntimeStatusPersistsAcrossReopen(t *testing.T) {
 	}
 	if status.LastFailureReason != reason {
 		t.Fatalf("expected persisted failure reason %q, got %q", reason, status.LastFailureReason)
+	}
+	if status.LastFailureStatusCode != statusCode {
+		t.Fatalf("expected persisted failure status code %d, got %d", statusCode, status.LastFailureStatusCode)
+	}
+
+	nonHTTPFailureAt := failureAt.Add(time.Minute)
+	nonHTTPReason := "transient_network_error"
+	emptyStatusCode := 0
+	status, err = store.UpsertEndpointRuntimeStatus("Primary", EndpointRuntimeStatusPatch{
+		LastFailureAt:         &nonHTTPFailureAt,
+		LastFailureReason:     &nonHTTPReason,
+		LastFailureStatusCode: &emptyStatusCode,
+	})
+	if err != nil {
+		t.Fatalf("upsert non-http failure status: %v", err)
+	}
+	if status.LastFailureStatusCode != 0 {
+		t.Fatalf("expected non-http failure to clear status code, got %d", status.LastFailureStatusCode)
+	}
+}
+
+func TestMigrateEndpointRuntimeFailureStatusCode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ccnexus.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE endpoint_runtime_status (
+			endpoint_name TEXT PRIMARY KEY,
+			last_success_at DATETIME,
+			last_failure_at DATETIME,
+			last_failure_reason TEXT,
+			last_attempt_at DATETIME,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		INSERT INTO endpoint_runtime_status (endpoint_name, last_failure_reason)
+		VALUES ('Primary', 'rate_limited');
+	`)
+	if err != nil {
+		t.Fatalf("create old runtime status schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old storage: %v", err)
+	}
+
+	store, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("open migrated storage: %v", err)
+	}
+	defer store.Close()
+
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get migrated runtime statuses: %v", err)
+	}
+	status := statuses["Primary"]
+	if status == nil {
+		t.Fatalf("expected migrated Primary runtime status")
+	}
+	if status.LastFailureStatusCode != 0 {
+		t.Fatalf("expected migrated status code default 0, got %d", status.LastFailureStatusCode)
+	}
+
+	failureAt := time.Date(2026, 5, 8, 10, 11, 12, 0, time.UTC)
+	reason := "rate_limited"
+	statusCode := 429
+	status, err = store.UpsertEndpointRuntimeStatus("Primary", EndpointRuntimeStatusPatch{
+		LastFailureAt:         &failureAt,
+		LastFailureReason:     &reason,
+		LastFailureStatusCode: &statusCode,
+	})
+	if err != nil {
+		t.Fatalf("upsert migrated failure status: %v", err)
+	}
+	if status.LastFailureStatusCode != statusCode {
+		t.Fatalf("expected migrated status code %d, got %d", statusCode, status.LastFailureStatusCode)
 	}
 }

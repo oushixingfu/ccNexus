@@ -40,6 +40,7 @@ export default {
         inUse: '使用中',
         recentSuccess: '最近成功',
         recentFailure: '最近失败',
+        failureShort: '失败',
         failureReason: '失败原因',
         switchTo: '切换',
         switchFailed: '切换失败',

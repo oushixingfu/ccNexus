@@ -879,7 +879,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.DebugLog("[%s] Request failed %d: %s", endpoint.Name, resp.StatusCode, logMsg)
 			p.markCredentialFailure(credentialID, resp.StatusCode, errMsg)
 			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-			p.recordEndpointError(endpoint.Name, retryReason)
+			p.recordEndpointError(endpoint.Name, retryReason, resp.StatusCode)
 			p.markRequestInactive(endpoint.Name)
 			shouldFailover := shouldRotateEndpointAfterHTTPFailure(endpointAttempts, resp.StatusCode, errMsg)
 			if retryReason == "rate_limited" && !shouldFailover {
@@ -923,7 +923,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "route_gateway_denial", "Upstream %d looks like route/gateway denial, skipping credential invalidation", resp.StatusCode)
 			}
 			if skipCredentialPenalty {
-				p.recordEndpointError(endpoint.Name, "route_gateway_denial")
+				p.recordEndpointError(endpoint.Name, "route_gateway_denial", resp.StatusCode)
 				p.markRequestInactive(endpoint.Name)
 			} else {
 				if selectedCredential != nil &&
@@ -945,7 +945,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				}
 				p.markCredentialFailure(credentialID, resp.StatusCode, respLogMsg)
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
-				p.recordEndpointError(endpoint.Name, "credential_auth_failed")
+				p.recordEndpointError(endpoint.Name, "credential_auth_failed", resp.StatusCode)
 				p.markRequestInactive(endpoint.Name)
 				endpointAttempts = 0
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "credential_auth_failed", "Credential auth failed (%d), retrying with next token", resp.StatusCode)
@@ -969,7 +969,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
 			}
 			if !skipCredentialPenalty {
-				p.recordEndpointError(endpoint.Name, "non_retryable_status")
+				p.recordEndpointError(endpoint.Name, "non_retryable_status", resp.StatusCode)
 			}
 			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "non_retryable_status", "Response %d: %s", resp.StatusCode, respLogMsg)
 			logger.DebugLog("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, respLogMsg)

@@ -15,13 +15,14 @@ type EndpointCurrentEvent struct {
 }
 
 type EndpointRuntimeEvent struct {
-	EndpointName      string     `json:"endpointName"`
-	ActiveCount       int        `json:"activeCount"`
-	LastSuccessAt     *time.Time `json:"lastSuccessAt,omitempty"`
-	LastFailureAt     *time.Time `json:"lastFailureAt,omitempty"`
-	LastFailureReason string     `json:"lastFailureReason,omitempty"`
-	LastAttemptAt     *time.Time `json:"lastAttemptAt,omitempty"`
-	Event             string     `json:"event"`
+	EndpointName          string     `json:"endpointName"`
+	ActiveCount           int        `json:"activeCount"`
+	LastSuccessAt         *time.Time `json:"lastSuccessAt,omitempty"`
+	LastFailureAt         *time.Time `json:"lastFailureAt,omitempty"`
+	LastFailureReason     string     `json:"lastFailureReason,omitempty"`
+	LastFailureStatusCode int        `json:"lastFailureStatusCode,omitempty"`
+	LastAttemptAt         *time.Time `json:"lastAttemptAt,omitempty"`
+	Event                 string     `json:"event"`
 }
 
 func (p *Proxy) getActiveRequestCount(endpointName string) int {
@@ -44,6 +45,7 @@ func (p *Proxy) emitEndpointRuntimeEvent(endpointName, event string, status *sto
 		runtimeEvent.LastSuccessAt = status.LastSuccessAt
 		runtimeEvent.LastFailureAt = status.LastFailureAt
 		runtimeEvent.LastFailureReason = status.LastFailureReason
+		runtimeEvent.LastFailureStatusCode = status.LastFailureStatusCode
 		runtimeEvent.LastAttemptAt = status.LastAttemptAt
 	}
 	p.onEndpointRuntimeChanged(runtimeEvent)
@@ -83,27 +85,37 @@ func (p *Proxy) recordEndpointSuccess(endpointName string) *storage.EndpointRunt
 	return status
 }
 
-func (p *Proxy) recordEndpointFailure(endpointName, reason string) *storage.EndpointRuntimeStatus {
+func endpointFailureStatusCode(statusCodes []int) int {
+	if len(statusCodes) == 0 || statusCodes[0] <= 0 {
+		return 0
+	}
+	return statusCodes[0]
+}
+
+func (p *Proxy) recordEndpointFailure(endpointName, reason string, statusCodes ...int) *storage.EndpointRuntimeStatus {
 	now := time.Now().UTC()
 	cleanReason := sanitizeLogField(reason)
+	statusCode := endpointFailureStatusCode(statusCodes)
 	status := p.upsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
-		LastFailureAt:     &now,
-		LastFailureReason: &cleanReason,
+		LastFailureAt:         &now,
+		LastFailureReason:     &cleanReason,
+		LastFailureStatusCode: &statusCode,
 	})
 	if status == nil {
 		status = &storage.EndpointRuntimeStatus{
-			EndpointName:      endpointName,
-			LastFailureAt:     &now,
-			LastFailureReason: cleanReason,
-			UpdatedAt:         now,
+			EndpointName:          endpointName,
+			LastFailureAt:         &now,
+			LastFailureReason:     cleanReason,
+			LastFailureStatusCode: statusCode,
+			UpdatedAt:             now,
 		}
 	}
 	return status
 }
 
-func (p *Proxy) recordEndpointError(endpointName, reason string) {
+func (p *Proxy) recordEndpointError(endpointName, reason string, statusCodes ...int) {
 	p.stats.RecordError(endpointName)
-	status := p.recordEndpointFailure(endpointName, reason)
+	status := p.recordEndpointFailure(endpointName, reason, statusCodes...)
 	p.emitEndpointRuntimeEvent(endpointName, "failure", status)
 }
 

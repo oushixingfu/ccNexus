@@ -89,19 +89,21 @@ type CredentialUsage struct {
 }
 
 type EndpointRuntimeStatus struct {
-	EndpointName      string     `json:"endpointName"`
-	LastSuccessAt     *time.Time `json:"lastSuccessAt,omitempty"`
-	LastFailureAt     *time.Time `json:"lastFailureAt,omitempty"`
-	LastFailureReason string     `json:"lastFailureReason,omitempty"`
-	LastAttemptAt     *time.Time `json:"lastAttemptAt,omitempty"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	EndpointName          string     `json:"endpointName"`
+	LastSuccessAt         *time.Time `json:"lastSuccessAt,omitempty"`
+	LastFailureAt         *time.Time `json:"lastFailureAt,omitempty"`
+	LastFailureReason     string     `json:"lastFailureReason,omitempty"`
+	LastFailureStatusCode int        `json:"lastFailureStatusCode"`
+	LastAttemptAt         *time.Time `json:"lastAttemptAt,omitempty"`
+	UpdatedAt             time.Time  `json:"updatedAt"`
 }
 
 type EndpointRuntimeStatusPatch struct {
-	LastSuccessAt     *time.Time
-	LastFailureAt     *time.Time
-	LastFailureReason *string
-	LastAttemptAt     *time.Time
+	LastSuccessAt         *time.Time
+	LastFailureAt         *time.Time
+	LastFailureReason     *string
+	LastFailureStatusCode *int
+	LastAttemptAt         *time.Time
 }
 
 type TokenPoolStats struct {

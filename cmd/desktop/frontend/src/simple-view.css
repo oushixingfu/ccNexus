@@ -219,16 +219,20 @@ span.compact-badge-btn:hover {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    width: 260px;
+    width: 310px;
     min-width: 160px;
     flex-shrink: 0;
     overflow: hidden;
 }
 
 .compact-runtime-slot .runtime-badge {
-    max-width: 120px;
+    max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.compact-runtime-slot .runtime-badge-failure {
+    max-width: 220px;
 }
 
 .compact-url {

@@ -40,6 +40,7 @@ export default {
         inUse: 'In use',
         recentSuccess: 'Last success',
         recentFailure: 'Last failure',
+        failureShort: 'Fail',
         failureReason: 'Failure reason',
         switchTo: 'Switch',
         switchFailed: 'Switch Failed',

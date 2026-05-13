@@ -574,6 +574,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		endpointAttempts = 0
 	}
+	lastAttemptEndpointName := ""
+	clientErrorRecorded := false
+	recordClientError := func(endpointName string) {
+		if clientErrorRecorded {
+			return
+		}
+		if strings.TrimSpace(endpointName) == "" {
+			endpointName = lastAttemptEndpointName
+		}
+		p.recordEndpointClientError(endpointName)
+		clientErrorRecorded = true
+	}
 	refreshedCredentialAttempts := make(map[int64]bool)
 
 	for retry := 0; retry < maxRetries; retry++ {
@@ -593,6 +605,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "No enabled endpoints available", http.StatusServiceUnavailable)
 			return
 		}
+		lastAttemptEndpointName = endpoint.Name
 
 		endpointAttempts++
 		attemptNumber := retry + 1
@@ -796,6 +809,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		contentType := resp.Header.Get("Content-Type")
 		isStreaming := shouldHandleAsStreamingResponse(contentType, streamReq.Stream, upstreamEndpoint, transformerName)
 
+		recordClientSuccess := func(inputTokens, outputTokens int, recordEndpointSuccess bool) {
+			p.stats.RecordRequest(endpoint.Name)
+			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
+			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
+			p.markCredentialSuccess(credentialID)
+			p.markRequestInactive(endpoint.Name)
+			if recordEndpointSuccess {
+				p.clearEndpointCooldown(endpoint.Name)
+				p.recordEndpointSuccessEvent(endpoint.Name)
+			}
+		}
+
 		// Codex backend and force-stream endpoints may require stream=true upstream.
 		// Bridge to non-stream client responses regardless of upstream Content-Type quirks.
 		if resp.StatusCode == http.StatusOK && !streamReq.Stream && shouldAggregateStreamingAsNonStreaming(upstreamEndpoint, transformerName) {
@@ -806,13 +831,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					inputTokens, outputTokens = p.estimateTokens(bodyBytes, outputText, inputTokens, outputTokens, endpoint.Name)
 				}
 
-				p.stats.RecordRequest(endpoint.Name)
-				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
-				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
-				p.markCredentialSuccess(credentialID)
-				p.clearEndpointCooldown(endpoint.Name)
-				p.markRequestInactive(endpoint.Name)
-				p.recordEndpointSuccessEvent(endpoint.Name)
+				recordClientSuccess(inputTokens, outputTokens, true)
 				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 				logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
 				return
@@ -840,6 +859,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 						advanceForFailure(endpoint, retryReasonSemanticEmptyResponse, attemptNumber, nil)
 						continue
 					}
+					recordClientError(endpoint.Name)
 					writeSemanticEmptyFailure(w, streamSession, clientFormat, transformerName, semanticErr)
 					return
 				}
@@ -910,6 +930,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 							advanceForFailure(endpoint, retryReasonSemanticEmptyResponse, attemptNumber, nil)
 							continue
 						}
+						recordClientError(endpoint.Name)
 						writeSemanticEmptyFailure(w, streamSession, clientFormat, transformerName, semanticErr)
 						return
 					}
@@ -917,6 +938,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, retryReason, "Streaming response failed: %v", streamResult.Err)
+				if streamResult.ClientTerminalSuccess {
+					p.recordEndpointError(endpoint.Name, retryReason)
+					p.markEndpointCooldownForReason(endpoint.Name, retryReason, resp.Header, obs, attemptNumber)
+					if !useSpecificEndpoint {
+						p.switchCurrentEndpointAfterFailure(endpoint, retryReason, obs, attemptNumber)
+					}
+					recordClientSuccess(inputTokens, outputTokens, false)
+					totalElapsed := time.Since(requestStart).Round(time.Millisecond)
+					logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
+					return
+				}
 				p.markCredentialFailure(credentialID, 0, streamResult.Err.Error())
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
 				p.recordEndpointError(endpoint.Name, retryReason)
@@ -925,6 +957,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				if !useSpecificEndpoint {
 					p.switchCurrentEndpointAfterFailure(endpoint, retryReason, obs, attemptNumber)
 				}
+				recordClientError(endpoint.Name)
 				if streamSession != nil && streamSession.Started() && !streamResult.WroteData {
 					_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, retryReason, fmt.Sprintf("Streaming response failed: %v", streamResult.Err))
 				} else if streamSession != nil && !streamSession.Started() && !streamResult.WroteData {
@@ -934,13 +967,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			p.stats.RecordRequest(endpoint.Name)
-			p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
-			p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
-			p.markCredentialSuccess(credentialID)
-			p.clearEndpointCooldown(endpoint.Name)
-			p.markRequestInactive(endpoint.Name)
-			p.recordEndpointSuccessEvent(endpoint.Name)
+			recordClientSuccess(inputTokens, outputTokens, true)
 			totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 			logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
 			return
@@ -949,13 +976,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode == http.StatusOK {
 			inputTokens, outputTokens, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
 			if err == nil {
-				p.stats.RecordRequest(endpoint.Name)
-				p.stats.RecordTokens(endpoint.Name, inputTokens, outputTokens)
-				p.recordCredentialUsage(credentialID, endpoint.Name, 1, 0, inputTokens, outputTokens)
-				p.markCredentialSuccess(credentialID)
-				p.clearEndpointCooldown(endpoint.Name)
-				p.markRequestInactive(endpoint.Name)
-				p.recordEndpointSuccessEvent(endpoint.Name)
+				recordClientSuccess(inputTokens, outputTokens, true)
 				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
 				logRequestAttemptResult(obs, endpoint.Name, attemptNumber, http.StatusOK, "", "Requested tokens=%d/%d latency=%s cred_id=%d", inputTokens, outputTokens, totalElapsed, credentialID)
 				return
@@ -988,6 +1009,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 						advanceForFailure(endpoint, retryReasonSemanticEmptyResponse, attemptNumber, nil)
 						continue
 					}
+					recordClientError(endpoint.Name)
 					writeSemanticEmptyFailure(w, streamSession, clientFormat, transformerName, semanticErr)
 					return
 				}
@@ -1029,6 +1051,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			if isUpstreamInvalidRequestHTTPFailure(resp.StatusCode, errMsg) {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "upstream_invalid_request", "Upstream returned invalid request error, not retrying endpoint: %s", logMsg)
 				p.markRequestInactive(endpoint.Name)
+				recordClientError(endpoint.Name)
 				if streamSession != nil && streamSession.Started() {
 					_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, "upstream_invalid_request", fmt.Sprintf("Upstream returned invalid request: %s", logMsg))
 					return
@@ -1061,6 +1084,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				} else {
 					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, retryReasonEndpointAuthFailed, "API key auth failed and no alternate endpoint is available: %s", logMsg)
 				}
+				recordClientError(endpoint.Name)
 				if streamSession != nil && streamSession.Started() {
 					_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, retryReasonEndpointAuthFailed, fmt.Sprintf("Upstream returned status %d: %s", resp.StatusCode, logMsg))
 					return
@@ -1198,9 +1222,11 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logger.DebugLog("[%s] Response %d: %s", endpoint.Name, resp.StatusCode, respLogMsg)
 		}
 		if streamSession != nil && streamSession.Started() {
+			recordClientError(endpoint.Name)
 			_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, "upstream_status", fmt.Sprintf("Upstream returned status %d: %s", resp.StatusCode, respLogMsg))
 			return
 		}
+		recordClientError(endpoint.Name)
 		// Remove Content-Encoding header since we've decompressed
 		for key, values := range resp.Header {
 			if key == "Content-Encoding" || key == "Content-Length" {
@@ -1216,10 +1242,12 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if streamSession != nil && streamSession.Started() {
+		recordClientError("")
 		_ = writeDownstreamStreamFailure(streamSession, clientFormat, "", "all_endpoints_failed", "All endpoints failed")
 		return
 	}
 
+	recordClientError("")
 	http.Error(w, "All endpoints failed", http.StatusServiceUnavailable)
 }
 

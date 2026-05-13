@@ -470,6 +470,76 @@ func TestConnectionFailureUsesFastEndpointFailover(t *testing.T) {
 	}
 }
 
+func TestStatsDoNotCountRecoveredRetryAttemptsAsErrors(t *testing.T) {
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"temporary upstream failure"}}`))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(validResponsesBody("resp-fallback", "ok")))
+	}))
+	defer fallback.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", primary.URL),
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+	statsStore := &recordingStatsStorage{}
+	p.stats = NewStats(statsStore, "test-device")
+
+	rec := issueFailoverPolicyTestRequest(p, "req-stats-recovered-retry")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected request to recover on fallback, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if primaryHits != endpointSlowFailoverAttempts || fallbackHits != 1 {
+		t.Fatalf("expected %d primary retries then one fallback, got primary=%d fallback=%d", endpointSlowFailoverAttempts, primaryHits, fallbackHits)
+	}
+	requests, errors, inputTokens, outputTokens := statsStore.totals()
+	if requests != 1 || errors != 0 || inputTokens == 0 || outputTokens == 0 {
+		t.Fatalf("expected stats to count one successful client request and no retry errors, got requests=%d errors=%d input=%d output=%d records=%#v", requests, errors, inputTokens, outputTokens, statsStore.records)
+	}
+}
+
+func TestStatsCountExhaustedFailureOncePerClientRequest(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"primary unavailable"}}`))
+	}))
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"fallback unavailable"}}`))
+	}))
+	defer fallback.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", primary.URL),
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+	statsStore := &recordingStatsStorage{}
+	p.stats = NewStats(statsStore, "test-device")
+
+	rec := issueFailoverPolicyTestRequest(p, "req-stats-final-error")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected exhausted request to return 503, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	requests, errors, inputTokens, outputTokens := statsStore.totals()
+	if requests != 0 || errors != 1 || inputTokens != 0 || outputTokens != 0 {
+		t.Fatalf("expected stats to count one final client error only, got requests=%d errors=%d input=%d output=%d records=%#v", requests, errors, inputTokens, outputTokens, statsStore.records)
+	}
+}
+
 func newFailoverPolicyTestProxy(endpoints []config.Endpoint, client *http.Client) *Proxy {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints(endpoints)

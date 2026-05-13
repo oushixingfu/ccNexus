@@ -187,9 +187,15 @@ func (p *Proxy) recordEndpointFailure(endpointName, reason string, statusCodes .
 }
 
 func (p *Proxy) recordEndpointError(endpointName, reason string, statusCodes ...int) {
-	p.stats.RecordError(endpointName)
 	status := p.recordEndpointFailure(endpointName, reason, statusCodes...)
 	p.emitEndpointRuntimeEvent(endpointName, "failure", status)
+}
+
+func (p *Proxy) recordEndpointClientError(endpointName string) {
+	if p == nil || p.stats == nil || strings.TrimSpace(endpointName) == "" {
+		return
+	}
+	p.stats.RecordError(endpointName)
 }
 
 func (p *Proxy) recordEndpointSuccessEvent(endpointName string) {

@@ -216,14 +216,15 @@ func (s *downstreamStreamSession) writeComment(message string) error {
 }
 
 type streamResponseResult struct {
-	InputTokens       int
-	OutputTokens      int
-	OutputText        string
-	Completed         bool
-	WroteData         bool
-	WroteSemanticData bool
-	Reason            string
-	Err               error
+	InputTokens           int
+	OutputTokens          int
+	OutputText            string
+	Completed             bool
+	WroteData             bool
+	WroteSemanticData     bool
+	ClientTerminalSuccess bool
+	Reason                string
+	Err                   error
 }
 
 // handleStreamingResponse processes streaming SSE responses
@@ -612,6 +613,7 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 			result.Err = writeErr
 		} else {
 			result.Completed = false
+			result.ClientTerminalSuccess = true
 			result.Reason = streamFinishUpstreamStreamError
 			result.Err = fmt.Errorf("stream closed before response.completed")
 			logger.Warn("[%s] Upstream stream closed before response.completed; sent synthetic completion and marked endpoint failed", endpoint.Name)
@@ -636,6 +638,8 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 		!responseCompletedSeen {
 		if writeErr := writeSyntheticResponsesCompletion(true); writeErr != nil {
 			logger.Debug("[%s] Failed to write synthetic completion after stream error: %v", endpoint.Name, writeErr)
+		} else {
+			result.ClientTerminalSuccess = true
 		}
 	}
 

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/lich0821/ccNexus/internal/config"
@@ -84,6 +85,13 @@ func main() {
 
 	statsAdapter := storage.NewStatsStorageAdapter(sqliteStorage)
 	p := proxy.New(cfg, statsAdapter, sqliteStorage, deviceID)
+	if currentEndpoint, err := sqliteStorage.GetConfig("current_endpoint"); err == nil && strings.TrimSpace(currentEndpoint) != "" {
+		if err := p.SetCurrentEndpoint(strings.TrimSpace(currentEndpoint)); err != nil {
+			logger.Warn("Failed to restore current endpoint %q: %v", currentEndpoint, err)
+		} else {
+			logger.Info("Restored current endpoint: %s", strings.TrimSpace(currentEndpoint))
+		}
+	}
 
 	// Create HTTP mux
 	mux := http.NewServeMux()

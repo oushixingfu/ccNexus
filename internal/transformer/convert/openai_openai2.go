@@ -19,6 +19,9 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		"model":  model,
 		"stream": req.Stream,
 	}
+	if req.Temperature != nil {
+		openai2Req["temperature"] = *req.Temperature
+	}
 	if req.Reasoning != nil {
 		openai2Req["reasoning"] = req.Reasoning
 	} else if effort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort)); effort != "" {
@@ -86,17 +89,25 @@ func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
 		return nil, err
 	}
 
+	_, removedMaxOutputTokens := body["max_output_tokens"]
+	delete(body, "max_output_tokens")
+
 	rawInput, ok := body["input"].([]interface{})
 	if !ok {
+		if removedMaxOutputTokens {
+			return json.Marshal(body)
+		}
 		return openai2Req, nil
 	}
 
 	normalizedInput, changed := normalizeOpenAI2InputForUpstream(rawInput)
-	if !changed {
+	if !changed && !removedMaxOutputTokens {
 		return openai2Req, nil
 	}
 
-	body["input"] = normalizedInput
+	if changed {
+		body["input"] = normalizedInput
+	}
 	return json.Marshal(body)
 }
 
@@ -448,6 +459,9 @@ func OpenAI2ReqToOpenAI(openai2Req []byte, model string) ([]byte, error) {
 		Model:    model,
 		Messages: messages,
 		Stream:   req.Stream,
+	}
+	if req.Temperature != nil {
+		openaiReq.Temperature = req.Temperature
 	}
 	if req.Reasoning != nil {
 		if effort, ok := req.Reasoning["effort"].(string); ok {

@@ -20,6 +20,7 @@ dist/
 *.dmg
 *.deb
 *.rpm
+/server
 
 # Go
 *.o
@@ -50,3 +51,9 @@ node_modules/
 # Logs
 *.log
 /cmd/server/ccnexus/
+/cmd/server/ccnexus*/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak-*

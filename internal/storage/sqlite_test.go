@@ -187,6 +187,177 @@ func TestEndpointRuntimeStatusPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestClearStatsDeletesDailyStats(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ccnexus.db")
+	store, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer store.Close()
+
+	stats := []*DailyStat{
+		{EndpointName: "A", Date: "2026-05-11", Requests: 3, Errors: 1, InputTokens: 10, OutputTokens: 20, DeviceID: "device-a"},
+		{EndpointName: "B", Date: "2026-05-11", Requests: 2, Errors: 0, InputTokens: 7, OutputTokens: 11, DeviceID: "device-b"},
+	}
+	for _, stat := range stats {
+		if err := store.RecordDailyStat(stat); err != nil {
+			t.Fatalf("record stat: %v", err)
+		}
+	}
+
+	total, endpoints, err := store.GetTotalStats()
+	if err != nil {
+		t.Fatalf("get total stats before clear: %v", err)
+	}
+	if total != 5 || len(endpoints) != 2 {
+		t.Fatalf("expected seeded stats before clear, total=%d endpoints=%d", total, len(endpoints))
+	}
+
+	if err := store.ClearStats(); err != nil {
+		t.Fatalf("clear stats: %v", err)
+	}
+
+	total, endpoints, err = store.GetTotalStats()
+	if err != nil {
+		t.Fatalf("get total stats after clear: %v", err)
+	}
+	if total != 0 || len(endpoints) != 0 {
+		t.Fatalf("expected empty stats after clear, total=%d endpoints=%d", total, len(endpoints))
+	}
+
+	allStats, err := store.GetAllStats()
+	if err != nil {
+		t.Fatalf("get all stats after clear: %v", err)
+	}
+	if len(allStats) != 0 {
+		t.Fatalf("expected no daily stats after clear, got %d endpoints", len(allStats))
+	}
+}
+
+func TestUpdateEndpointByNameRenamesReferences(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ccnexus.db")
+	store, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer store.Close()
+
+	endpoint := &Endpoint{
+		Name:        "Primary",
+		APIUrl:      "https://primary.example.com",
+		APIKey:      "key",
+		AuthMode:    "api_key",
+		Enabled:     true,
+		Transformer: "openai2",
+		Model:       "gpt-test",
+		SortOrder:   1,
+	}
+	if err := store.SaveEndpoint(endpoint); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+	if err := store.SetConfig("current_endpoint", "Primary"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+
+	credential := &EndpointCredential{
+		EndpointName: "Primary",
+		ProviderType: "codex",
+		AccessToken:  "access-token",
+		Status:       "active",
+		Enabled:      true,
+	}
+	if err := store.SaveEndpointCredential(credential); err != nil {
+		t.Fatalf("save credential: %v", err)
+	}
+	if err := store.UpsertCredentialUsage(credential.ID, "Primary", 3, 1, 11, 17, time.Now()); err != nil {
+		t.Fatalf("upsert credential usage: %v", err)
+	}
+	successAt := time.Date(2026, 5, 12, 9, 0, 0, 0, time.UTC)
+	if _, err := store.UpsertEndpointRuntimeStatus("Primary", EndpointRuntimeStatusPatch{LastSuccessAt: &successAt}); err != nil {
+		t.Fatalf("upsert runtime status: %v", err)
+	}
+	if err := store.RecordDailyStat(&DailyStat{
+		EndpointName: "Primary",
+		Date:         "2026-05-12",
+		Requests:     4,
+		Errors:       1,
+		InputTokens:  21,
+		OutputTokens: 34,
+		DeviceID:     "test-device",
+	}); err != nil {
+		t.Fatalf("record daily stat: %v", err)
+	}
+
+	endpoint.Name = "Renamed"
+	endpoint.Model = "gpt-renamed"
+	if err := store.UpdateEndpointByName("Primary", endpoint); err != nil {
+		t.Fatalf("rename endpoint: %v", err)
+	}
+
+	endpoints, err := store.GetEndpoints()
+	if err != nil {
+		t.Fatalf("get endpoints: %v", err)
+	}
+	endpointNames := map[string]bool{}
+	for _, ep := range endpoints {
+		endpointNames[ep.Name] = true
+		if ep.Name == "Renamed" && ep.Model != "gpt-renamed" {
+			t.Fatalf("expected renamed endpoint model to update, got %q", ep.Model)
+		}
+	}
+	if endpointNames["Primary"] || !endpointNames["Renamed"] {
+		t.Fatalf("expected endpoint name to move from Primary to Renamed, got %#v", endpointNames)
+	}
+	currentEndpoint, err := store.GetConfig("current_endpoint")
+	if err != nil {
+		t.Fatalf("get current endpoint: %v", err)
+	}
+	if currentEndpoint != "Renamed" {
+		t.Fatalf("expected current endpoint to be Renamed, got %q", currentEndpoint)
+	}
+
+	oldCreds, err := store.GetEndpointCredentials("Primary")
+	if err != nil {
+		t.Fatalf("get old credentials: %v", err)
+	}
+	newCreds, err := store.GetEndpointCredentials("Renamed")
+	if err != nil {
+		t.Fatalf("get renamed credentials: %v", err)
+	}
+	if len(oldCreds) != 0 || len(newCreds) != 1 {
+		t.Fatalf("expected credentials to move to Renamed, old=%d new=%d", len(oldCreds), len(newCreds))
+	}
+	oldUsage, err := store.GetCredentialUsageByEndpoint("Primary")
+	if err != nil {
+		t.Fatalf("get old credential usage: %v", err)
+	}
+	newUsage, err := store.GetCredentialUsageByEndpoint("Renamed")
+	if err != nil {
+		t.Fatalf("get renamed credential usage: %v", err)
+	}
+	if len(oldUsage) != 0 || len(newUsage) != 1 {
+		t.Fatalf("expected credential usage to move to Renamed, old=%d new=%d", len(oldUsage), len(newUsage))
+	}
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	if statuses["Primary"] != nil || statuses["Renamed"] == nil {
+		t.Fatalf("expected runtime status to move to Renamed, statuses=%#v", statuses)
+	}
+	oldStats, err := store.GetDailyStats("Primary", "2026-05-12", "2026-05-12")
+	if err != nil {
+		t.Fatalf("get old daily stats: %v", err)
+	}
+	newStats, err := store.GetDailyStats("Renamed", "2026-05-12", "2026-05-12")
+	if err != nil {
+		t.Fatalf("get renamed daily stats: %v", err)
+	}
+	if len(oldStats) != 0 || len(newStats) != 1 || newStats[0].Requests != 4 {
+		t.Fatalf("expected daily stats to move to Renamed, old=%d new=%#v", len(oldStats), newStats)
+	}
+}
+
 func TestMigrateEndpointRuntimeFailureStatusCode(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ccnexus.db")
 	db, err := sql.Open("sqlite", dbPath)

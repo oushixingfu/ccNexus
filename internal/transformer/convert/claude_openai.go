@@ -122,8 +122,8 @@ func ClaudeReqToOpenAIWithThinking(claudeReq []byte, model string, thinking stri
 	if req.MaxTokens > 0 {
 		openaiReq.MaxCompletionTokens = req.MaxTokens
 	}
-	if req.Temperature > 0 {
-		openaiReq.Temperature = &req.Temperature
+	if req.Temperature != nil {
+		openaiReq.Temperature = req.Temperature
 	}
 	thinking = strings.ToLower(strings.TrimSpace(thinking))
 	if thinking != "" && thinking != "off" {

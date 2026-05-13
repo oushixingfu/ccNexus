@@ -6,13 +6,16 @@ services:
     container_name: ccnexus
     restart: unless-stopped
     ports:
-      - "3021:3000"
+      - "127.0.0.1:3021:3000"
     volumes:
       - ./ccnexus/:/data
     environment:
       - CCNEXUS_PORT=3000
       - CCNEXUS_DATA_DIR=/data
       - CCNEXUS_DB_PATH=/data/ccnexus.db
+      - CCNEXUS_BASIC_AUTH_ENABLED=true
+      - CCNEXUS_BASIC_AUTH_USERNAME=${CCNEXUS_BASIC_AUTH_USERNAME:-admin}
+      - CCNEXUS_BASIC_AUTH_PASSWORD=${CCNEXUS_BASIC_AUTH_PASSWORD}
       - TZ=Asia/Shanghai
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]

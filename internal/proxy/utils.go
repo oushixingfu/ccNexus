@@ -38,6 +38,7 @@ const (
 	defaultStreamHeaderTimeout     = 0 * time.Second
 	defaultStreamHeartbeatInterval = 10 * time.Second
 	retryReasonEndpointAuthFailed  = "endpoint_auth_failed"
+	retryReasonEndpointCapability  = "endpoint_capability_mismatch"
 	retryReasonTransportProtocol   = "transport_protocol_error"
 )
 
@@ -138,7 +139,8 @@ func shouldRetryWithForcedStream(statusCode int, body string, clientRequestedStr
 		return false
 	}
 	lower := strings.ToLower(strings.TrimSpace(body))
-	return strings.Contains(lower, "stream must be set to true")
+	return strings.Contains(lower, "stream must be set to true") ||
+		(strings.Contains(lower, "bad_response_body") && strings.Contains(lower, "invalid character"))
 }
 
 func isUpstreamInvalidRequestHTTPFailure(statusCode int, body string) bool {
@@ -149,6 +151,30 @@ func isUpstreamInvalidRequestHTTPFailure(statusCode int, body string) bool {
 	return strings.Contains(lower, `"code":"invalid_request"`) ||
 		strings.Contains(lower, `"type":"invalid_request_error"`) ||
 		strings.Contains(lower, "invalid_request")
+}
+
+func isEndpointThinkingHTTPFailure(statusCode int, body string, thinking string) bool {
+	effort := normalizeEndpointThinking(thinking)
+	if statusCode < http.StatusBadRequest || effort == "" {
+		return false
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(body))
+	if lower == "" || !strings.Contains(lower, effort) {
+		return false
+	}
+	hasUnsupportedMarker := strings.Contains(lower, "not supported") ||
+		strings.Contains(lower, "unsupported") ||
+		strings.Contains(lower, "valid levels") ||
+		strings.Contains(lower, "invalid reasoning") ||
+		strings.Contains(lower, "invalid thinking")
+	if !hasUnsupportedMarker {
+		return false
+	}
+	return strings.Contains(lower, "reasoning") ||
+		strings.Contains(lower, "thinking") ||
+		strings.Contains(lower, "effort") ||
+		strings.Contains(lower, "level")
 }
 
 func shouldRotateEndpointAfterHTTPFailure(endpointAttempts int, statusCode int, body string) bool {

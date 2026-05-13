@@ -82,6 +82,15 @@ export default {
         remark: 'Remark',
         forceStream: 'Force streaming upstream',
         forceStreamHint: 'Use when this endpoint rejects non-streaming requests; ccNexus aggregates the stream for non-streaming clients.',
+        autoSelect: 'Auto-select upstream protocol',
+        autoSelectShort: 'Auto',
+        autoSelectHint: 'Accept Claude Code, OpenAI Chat, and OpenAI Responses on one endpoint, then choose the upstream protocol per request.',
+        supportsOpenAIResponses: 'Supports OpenAI Responses',
+        supportsOpenAIChat: 'Supports OpenAI Chat',
+        supportsClaudeMessages: 'Supports Claude Messages',
+        preferredClaudeUpstream: 'Claude client preferred upstream',
+        preferredOpenAIUpstream: 'OpenAI client preferred upstream',
+        upstreamAuto: 'Auto',
         fetchModels: 'Fetch Models',
         fetchModelsHint: 'Click "Fetch Models" to load available models from the API',
         modelPlaceholder: 'gpt-4, gemini-pro, etc.',
@@ -172,7 +181,11 @@ export default {
         inputTokens: 'Input Tokens',
         outputTokens: 'Output Tokens',
         noDataAvailable: 'No data available',
-        failedToLoad: 'Failed to load statistics'
+        clearStats: 'Clear Stats',
+        confirmClear: 'Clear all statistics? This action cannot be undone.',
+        clearSuccess: 'Statistics cleared',
+        failedToLoad: 'Failed to load statistics',
+        failedToClear: 'Failed to clear statistics'
     },
     testing: {
         title: 'Endpoint Testing',

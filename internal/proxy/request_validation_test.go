@@ -197,6 +197,66 @@ func TestHandleProxyAutoForceStreamsOpenAI2WhenUpstreamRequiresStream(t *testing
 	}
 }
 
+func TestHandleProxyAutoForceStreamsOpenAI2WhenUpstreamReturnsBadResponseBody(t *testing.T) {
+	var upstreamHits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode upstream request: %v", err)
+		}
+
+		stream, _ := body["stream"].(bool)
+		if upstreamHits == 1 {
+			if stream {
+				t.Fatalf("first upstream attempt should preserve non-stream client request, got stream=true")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid character 'e' looking for beginning of value","type":"bad_response_body","code":"bad_response_body"}}`))
+			return
+		}
+		if !stream {
+			t.Fatalf("second upstream attempt should force stream=true, got body=%#v", body)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`event: response.created`,
+			`data: {"response":{"id":"resp-stream","object":"response","status":"in_progress"}}`,
+			"",
+			`event: response.output_text.delta`,
+			`data: {"output_index":0,"content_index":0,"delta":"ok"}`,
+			"",
+			`event: response.completed`,
+			`data: {"response":{"id":"resp-stream","object":"response","status":"completed","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5},"output":[]}}`,
+			"",
+		}, "\n")))
+	}))
+	defer upstream.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", upstream.URL),
+	}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected forced streaming retry to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if upstreamHits != 2 {
+		t.Fatalf("expected one compatibility retry, got upstream hits=%d", upstreamHits)
+	}
+	if !strings.Contains(rec.Body.String(), `"id":"resp-stream"`) ||
+		!strings.Contains(rec.Body.String(), `"text":"ok"`) {
+		t.Fatalf("expected aggregated Responses payload with patched text, got %q", rec.Body.String())
+	}
+}
+
 func TestHandleProxyTreatsWrappedInvalidRequest500AsClientError(t *testing.T) {
 	var upstreamHits int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

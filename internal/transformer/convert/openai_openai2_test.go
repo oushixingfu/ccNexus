@@ -114,6 +114,7 @@ func TestNormalizeOpenAI2RequestForUpstreamConvertsToolRoleInput(t *testing.T) {
 	openai2Req := `{
 		"model":"gpt-5.5",
 		"stream":true,
+		"max_output_tokens":16,
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"lookup"}]},
 			{"type":"message","role":"assistant","content":[],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"symbol\":\"002714\"}"}}]},
@@ -129,6 +130,9 @@ func TestNormalizeOpenAI2RequestForUpstreamConvertsToolRoleInput(t *testing.T) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(reqBytes, &req); err != nil {
 		t.Fatalf("unmarshal normalized req failed: %v", err)
+	}
+	if _, ok := req["max_output_tokens"]; ok {
+		t.Fatalf("did not expect max_output_tokens after normalization, got %#v", req["max_output_tokens"])
 	}
 
 	input := req["input"].([]interface{})
@@ -385,5 +389,58 @@ func TestOpenAI2StreamToOpenAIPreservesReasoningDelta(t *testing.T) {
 	delta := choice["delta"].(map[string]interface{})
 	if delta["reasoning_content"] != "think" {
 		t.Fatalf("expected reasoning_content=think, got %#v", delta["reasoning_content"])
+	}
+}
+
+func TestOpenAIReqToOpenAI2PreservesZeroTemperature(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-4.1",
+		"stream":true,
+		"temperature":0,
+		"messages":[{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	temperature, ok := req["temperature"].(float64)
+	if !ok {
+		t.Fatalf("expected explicit temperature=0 to be preserved, got %#v", req["temperature"])
+	}
+	if temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", temperature)
+	}
+}
+
+func TestOpenAI2ReqToOpenAIPreservesZeroTemperature(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"stream":true,
+		"temperature":0,
+		"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"test"}]}]
+	}`
+
+	reqBytes, err := OpenAI2ReqToOpenAI([]byte(openai2Req), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("OpenAI2ReqToOpenAI failed: %v", err)
+	}
+
+	var req transformer.OpenAIRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	if req.Temperature == nil {
+		t.Fatal("expected explicit temperature=0 to be preserved")
+	}
+	if *req.Temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", *req.Temperature)
 	}
 }

@@ -9,6 +9,7 @@ import (
 type OpenAI2Transformer struct {
 	model    string
 	thinking string
+	apiURL   string
 }
 
 // NewOpenAI2Transformer creates a new transformer
@@ -18,7 +19,12 @@ func NewOpenAI2Transformer(model string) *OpenAI2Transformer {
 
 // NewOpenAI2TransformerWithThinking creates a new transformer with endpoint-level reasoning effort.
 func NewOpenAI2TransformerWithThinking(model, thinking string) *OpenAI2Transformer {
-	return &OpenAI2Transformer{model: model, thinking: thinking}
+	return NewOpenAI2TransformerWithAPIURL(model, thinking, "")
+}
+
+// NewOpenAI2TransformerWithAPIURL creates a new transformer with endpoint-level reasoning effort and API URL context.
+func NewOpenAI2TransformerWithAPIURL(model, thinking, apiURL string) *OpenAI2Transformer {
+	return &OpenAI2Transformer{model: model, thinking: thinking, apiURL: apiURL}
 }
 
 func (t *OpenAI2Transformer) Name() string {
@@ -26,7 +32,7 @@ func (t *OpenAI2Transformer) Name() string {
 }
 
 func (t *OpenAI2Transformer) TransformRequest(req []byte) ([]byte, error) {
-	return convert.ClaudeReqToOpenAI2WithThinking(req, t.model, t.thinking)
+	return convert.ClaudeReqToOpenAI2WithThinkingAndAPIURL(req, t.model, t.thinking, t.apiURL)
 }
 
 func (t *OpenAI2Transformer) TransformResponse(resp []byte, isStreaming bool) ([]byte, error) {

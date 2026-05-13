@@ -12,6 +12,39 @@ import (
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
+func TestInspectSemanticStreamEventRecognizesResponsesDoneEvents(t *testing.T) {
+	cases := []struct {
+		name string
+		sse  string
+	}{
+		{
+			name: "output text done",
+			sse:  `data: {"type":"response.output_text.done","text":"ok"}` + "\n\n",
+		},
+		{
+			name: "content part done",
+			sse:  `data: {"type":"response.content_part.done","part":{"type":"output_text","text":"ok"}}` + "\n\n",
+		},
+		{
+			name: "event line type",
+			sse:  "event: response.output_text.done\n" + `data: {"text":"ok"}` + "\n\n",
+		},
+		{
+			name: "function arguments done",
+			sse:  `data: {"type":"response.function_call_arguments.done","arguments":"{\"q\":\"ok\"}"}` + "\n\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inspection := inspectSemanticStreamEvent([]byte(tc.sse))
+			if !inspection.HasOutput {
+				t.Fatalf("expected stream event to have output, got %#v", inspection)
+			}
+		})
+	}
+}
+
 func TestSemanticEmptyResponsesNonStreamingRetriesBeforeWriting(t *testing.T) {
 	var hits int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +279,63 @@ func TestStreamingSemanticEmptyRetriesAfterDownstreamHeartbeat(t *testing.T) {
 	}
 	if strings.Contains(body, "resp-empty") {
 		t.Fatalf("did not expect first empty stream events to be forwarded, got %q", body)
+	}
+}
+
+func TestSemanticEmptyDoesNotFallbackToNextEndpoint(t *testing.T) {
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp-empty","object":"response","status":"completed","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"output":[]}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.output_text.delta","delta":"fallback"}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp-fallback","object":"response","status":"completed","usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fallback"}]}]}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer fallback.Close()
+
+	primaryEndpoint := failoverPolicyTestEndpoint("Primary", primary.URL)
+	primaryEndpoint.ForceStream = true
+	fallbackEndpoint := failoverPolicyTestEndpoint("Fallback", fallback.URL)
+	fallbackEndpoint.ForceStream = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{primaryEndpoint, fallbackEndpoint}, primary.Client())
+	p.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return http.DefaultTransport.RoundTrip(req)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if primaryHits != endpointSlowFailoverAttempts {
+		t.Fatalf("expected primary retries only, got primary hits=%d", primaryHits)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("expected semantic empty not to call fallback endpoint, got fallback hits=%d", fallbackHits)
+	}
+	if !strings.Contains(rec.Body.String(), `"type":"response.failed"`) ||
+		!strings.Contains(rec.Body.String(), retryReasonSemanticEmptyResponse) ||
+		!strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Fatalf("expected downstream Responses stream failure for semantic empty, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 

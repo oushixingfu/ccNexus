@@ -82,6 +82,15 @@ export default {
         remark: '备注',
         forceStream: '上游强制流式',
         forceStreamHint: '当端点拒绝非流式请求时启用；ccNexus 会为非流式客户端聚合流式响应。',
+        autoSelect: '自动选择上游协议',
+        autoSelectShort: '自动',
+        autoSelectHint: '同一个端点同时接收 Claude Code、OpenAI Chat 和 OpenAI Responses 请求，并按能力为每个请求选择上游协议。',
+        supportsOpenAIResponses: '支持 OpenAI Responses',
+        supportsOpenAIChat: '支持 OpenAI Chat',
+        supportsClaudeMessages: '支持 Claude Messages',
+        preferredClaudeUpstream: 'Claude 客户端优先上游',
+        preferredOpenAIUpstream: 'OpenAI 客户端优先上游',
+        upstreamAuto: '自动',
         fetchModels: '获取模型',
         fetchModelsHint: '点击"获取模型"从 API 加载可用模型',
         modelPlaceholder: 'gpt-4、gemini-pro 等',
@@ -172,7 +181,11 @@ export default {
         inputTokens: '输入令牌',
         outputTokens: '输出令牌',
         noDataAvailable: '暂无数据',
-        failedToLoad: '加载统计数据失败'
+        clearStats: '清空统计',
+        confirmClear: '确定要清空所有统计数据吗？此操作不可撤销。',
+        clearSuccess: '统计数据已清空',
+        failedToLoad: '加载统计数据失败',
+        failedToClear: '清空统计数据失败'
     },
     testing: {
         title: '端点测试',

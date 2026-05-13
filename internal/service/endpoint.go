@@ -157,16 +157,19 @@ func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transforme
 	apiUrl = normalizeAPIUrl(apiUrl)
 
 	newEndpoint := config.Endpoint{
-		Name:        name,
-		APIUrl:      apiUrl,
-		APIKey:      apiKey,
-		AuthMode:    authMode,
-		Enabled:     true,
-		Transformer: transformer,
-		Model:       model,
-		Thinking:    thinking,
-		ForceStream: forceStream,
-		Remark:      remark,
+		Name:                    name,
+		APIUrl:                  apiUrl,
+		APIKey:                  apiKey,
+		AuthMode:                authMode,
+		Enabled:                 true,
+		Transformer:             transformer,
+		Model:                   model,
+		Thinking:                thinking,
+		ForceStream:             forceStream,
+		SupportsOpenAIResponses: transformer == providercompat.TransformerOpenAI2,
+		SupportsOpenAIChat:      providercompat.IsOpenAIChatTransformer(transformer),
+		SupportsClaudeMessages:  transformer == providercompat.TransformerClaude,
+		Remark:                  remark,
 	}
 	config.ApplyEndpointAuthModeRules(&newEndpoint)
 	endpoints = append(endpoints, newEndpoint)
@@ -266,16 +269,22 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 	apiUrl = normalizeAPIUrl(apiUrl)
 
 	updatedEndpoint := config.Endpoint{
-		Name:        name,
-		APIUrl:      apiUrl,
-		APIKey:      apiKey,
-		AuthMode:    authMode,
-		Enabled:     enabled,
-		Transformer: transformer,
-		Model:       model,
-		Thinking:    thinking,
-		ForceStream: forceStream,
-		Remark:      remark,
+		Name:                    name,
+		APIUrl:                  apiUrl,
+		APIKey:                  apiKey,
+		AuthMode:                authMode,
+		Enabled:                 enabled,
+		Transformer:             transformer,
+		Model:                   model,
+		Thinking:                thinking,
+		ForceStream:             forceStream,
+		AutoSelect:              endpoints[index].AutoSelect,
+		SupportsOpenAIResponses: endpoints[index].SupportsOpenAIResponses,
+		SupportsOpenAIChat:      endpoints[index].SupportsOpenAIChat,
+		SupportsClaudeMessages:  endpoints[index].SupportsClaudeMessages,
+		PreferredClaudeUpstream: endpoints[index].PreferredClaudeUpstream,
+		PreferredOpenAIUpstream: endpoints[index].PreferredOpenAIUpstream,
+		Remark:                  remark,
 	}
 	config.ApplyEndpointAuthModeRules(&updatedEndpoint)
 	endpoints[index] = updatedEndpoint
@@ -490,7 +499,8 @@ func (e *EndpointService) TestEndpoint(index int) string {
 			model = providercompat.DefaultModel(transformer)
 		}
 		requestBody, err = json.Marshal(map[string]interface{}{
-			"model": model,
+			"model":  model,
+			"stream": true,
 			"input": []map[string]interface{}{
 				{
 					"type": "message",
@@ -562,6 +572,9 @@ func (e *EndpointService) TestEndpoint(index int) string {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case "openai", "openai2", "deepseek", "kimi":
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		if transformer == "openai2" {
+			req.Header.Set("Accept", "text/event-stream")
+		}
 	case "gemini":
 		q := req.URL.Query()
 		q.Add("key", apiKey)
@@ -603,6 +616,20 @@ func (e *EndpointService) TestEndpoint(index int) string {
 		return string(data)
 	}
 
+	if transformer == "openai2" && isEventStreamTestResponse(resp.Header.Get("Content-Type"), respBody) {
+		message := extractResponsesTestSSEText(respBody)
+		if message == "" {
+			message = string(respBody)
+		}
+		result := map[string]interface{}{
+			"success": true,
+			"message": message,
+		}
+		data, _ := json.Marshal(result)
+		logger.Info("Test successful for %s", endpoint.Name)
+		return string(data)
+	}
+
 	var responseData map[string]interface{}
 	if err := json.Unmarshal(respBody, &responseData); err != nil {
 		result := map[string]interface{}{
@@ -624,6 +651,8 @@ func (e *EndpointService) TestEndpoint(index int) string {
 				}
 			}
 		}
+	case "openai2":
+		message = extractResponsesTestJSONText(responseData)
 	case "openai", "deepseek", "kimi":
 		if choices, ok := responseData["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {
@@ -1088,8 +1117,8 @@ func (e *EndpointService) testMinimalRequest(apiUrl, apiKey, transformer, model 
 			body = converted
 		} else {
 			body, _ = json.Marshal(map[string]interface{}{
-				"model":             model,
-				"max_output_tokens": 16,
+				"model":  model,
+				"stream": true,
 				"input": []map[string]interface{}{
 					{"type": "message", "role": "user", "content": []map[string]interface{}{{"type": "input_text", "text": "ping"}}},
 				},
@@ -1136,6 +1165,9 @@ func (e *EndpointService) testMinimalRequest(apiUrl, apiKey, transformer, model 
 			req.Header.Set("anthropic-version", "2023-06-01")
 		} else if transformer != "gemini" {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
+			if transformer == "openai2" {
+				req.Header.Set("Accept", "text/event-stream")
+			}
 		}
 		applyCodexCredentialHeadersForTest(req, credential, body)
 
@@ -1324,6 +1356,74 @@ func isStreamingPayload(payload []byte) bool {
 	}
 	stream, ok := req["stream"].(bool)
 	return ok && stream
+}
+
+func isEventStreamTestResponse(contentType string, body []byte) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		return true
+	}
+	return strings.Contains(string(body), "data:")
+}
+
+func extractResponsesTestSSEText(body []byte) string {
+	var builder strings.Builder
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if delta, ok := event["delta"].(string); ok {
+			builder.WriteString(delta)
+		}
+		if text, ok := event["text"].(string); ok && builder.Len() == 0 {
+			builder.WriteString(text)
+		}
+		if response, ok := event["response"].(map[string]interface{}); ok {
+			if text := extractResponsesTestJSONText(response); text != "" && builder.Len() == 0 {
+				builder.WriteString(text)
+			}
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func extractResponsesTestJSONText(result map[string]interface{}) string {
+	if text, ok := result["output_text"].(string); ok && strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	output, ok := result["output"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var builder strings.Builder
+	for _, rawItem := range output {
+		item, ok := rawItem.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := item["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawPart := range content {
+			part, ok := rawPart.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if text, ok := part["text"].(string); ok {
+				builder.WriteString(text)
+			}
+		}
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func (e *EndpointService) resolveTokenPoolKeyForAPI(apiURL, transformer string) (string, error) {

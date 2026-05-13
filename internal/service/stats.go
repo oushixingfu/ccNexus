@@ -21,9 +21,17 @@ func NewStatsService(p *proxy.Proxy, cfg *config.Config) *StatsService {
 
 // GetStats returns current statistics
 func (s *StatsService) GetStats() string {
-	totalRequests, endpointStats := s.proxy.GetStats().GetStats()
+	totalSuccess, endpointStats := s.proxy.GetStats().GetStats()
+	totalErrors := 0
+	for _, stats := range endpointStats {
+		if stats != nil {
+			totalErrors += stats.Errors
+		}
+	}
 	data, _ := json.Marshal(map[string]interface{}{
-		"totalRequests": totalRequests,
+		"totalRequests": totalSuccess + totalErrors,
+		"totalSuccess":  totalSuccess,
+		"totalErrors":   totalErrors,
 		"endpoints":     endpointStats,
 	})
 	return string(data)
@@ -66,13 +74,14 @@ func (s *StatsService) getPeriodStats(period, startDate, endDate string) string 
 		stats = s.proxy.GetStats().GetPeriodStats(startDate, endDate)
 	}
 
-	var totalRequests, totalErrors, totalInputTokens, totalOutputTokens int
+	var totalSuccess, totalErrors, totalInputTokens, totalOutputTokens int
 	for _, st := range stats {
-		totalRequests += st.Requests
+		totalSuccess += st.Requests
 		totalErrors += st.Errors
 		totalInputTokens += st.InputTokens
 		totalOutputTokens += st.OutputTokens
 	}
+	totalRequests := totalSuccess + totalErrors
 
 	activeEndpoints, totalEndpoints := s.countEndpoints()
 
@@ -80,7 +89,7 @@ func (s *StatsService) getPeriodStats(period, startDate, endDate string) string 
 		"period":            period,
 		"totalRequests":     totalRequests,
 		"totalErrors":       totalErrors,
-		"totalSuccess":      totalRequests - totalErrors,
+		"totalSuccess":      totalSuccess,
 		"totalInputTokens":  totalInputTokens,
 		"totalOutputTokens": totalOutputTokens,
 		"activeEndpoints":   activeEndpoints,

@@ -51,6 +51,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		authMiddleware(http.HandlerFunc(h.handleReorderEndpoints)).ServeHTTP(w, r)
 	case "/api/endpoints/fetch-models":
 		authMiddleware(http.HandlerFunc(h.handleFetchModels)).ServeHTTP(w, r)
+	case "/api/stats":
+		authMiddleware(http.HandlerFunc(h.handleStatsClear)).ServeHTTP(w, r)
 	case "/api/stats/summary":
 		authMiddleware(http.HandlerFunc(h.handleStatsSummary)).ServeHTTP(w, r)
 	case "/api/stats/daily":

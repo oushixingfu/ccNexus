@@ -237,8 +237,8 @@ func (p *Proxy) getDefaultModels(ep config.Endpoint) []ModelInfo {
 	switch providercompat.NormalizeTransformer(ep.Transformer) {
 	case "claude":
 		// Claude endpoints
-		if ep.Model != "" {
-			modelID = ep.Model
+		if strings.TrimSpace(ep.Model) != "" {
+			modelID = strings.TrimSpace(ep.Model)
 		} else {
 			modelID = "claude-sonnet-4-20250514" // Default Claude model
 		}
@@ -246,8 +246,8 @@ func (p *Proxy) getDefaultModels(ep config.Endpoint) []ModelInfo {
 
 	case "openai2":
 		// Codex endpoints
-		if ep.Model != "" {
-			modelID = ep.Model
+		if strings.TrimSpace(ep.Model) != "" {
+			modelID = strings.TrimSpace(ep.Model)
 		} else if ep.AuthMode == config.AuthModeCodexTokenPool {
 			modelID = "gpt-5-codex" // Default Codex model
 		} else {
@@ -256,8 +256,8 @@ func (p *Proxy) getDefaultModels(ep config.Endpoint) []ModelInfo {
 		ownedBy = "openai"
 
 	case "deepseek", "kimi", "openai":
-		if ep.Model != "" {
-			modelID = ep.Model
+		if strings.TrimSpace(ep.Model) != "" {
+			modelID = strings.TrimSpace(ep.Model)
 		} else {
 			modelID = providercompat.DefaultModel(ep.Transformer)
 		}
@@ -265,8 +265,8 @@ func (p *Proxy) getDefaultModels(ep config.Endpoint) []ModelInfo {
 
 	default:
 		// Fallback for any other transformer
-		if ep.Model != "" {
-			modelID = ep.Model
+		if strings.TrimSpace(ep.Model) != "" {
+			modelID = strings.TrimSpace(ep.Model)
 		} else {
 			modelID = "unknown-model"
 		}
@@ -282,6 +282,20 @@ func (p *Proxy) getDefaultModels(ep config.Endpoint) []ModelInfo {
 			EndpointID: ep.Name,
 		},
 	}
+}
+
+func (p *Proxy) getModelsForEndpoint(ep config.Endpoint) ([]ModelInfo, bool) {
+	if strings.TrimSpace(ep.Model) != "" {
+		return p.getDefaultModels(ep), true
+	}
+
+	models, err := p.fetchModelsFromEndpoint(ep)
+	if err != nil {
+		logger.Debug("Failed to fetch models from %s: %v", ep.Name, err)
+		return p.getDefaultModels(ep), false
+	}
+
+	return models, true
 }
 
 // handleModels handles GET /v1/models requests
@@ -323,16 +337,8 @@ func (p *Proxy) loadModelsForResponse(refresh bool) []ModelInfo {
 			continue
 		}
 
-		var models []ModelInfo
-		var err error
-
-		// Try to fetch from endpoint's /v1/models API
-		models, err = p.fetchModelsFromEndpoint(ep)
-		if err != nil {
-			// If fetch fails, use default models for this endpoint
-			logger.Debug("Failed to fetch models from %s: %v", ep.Name, err)
-			models = p.getDefaultModels(ep)
-		} else {
+		models, ok := p.getModelsForEndpoint(ep)
+		if ok {
 			allFailed = false
 		}
 
@@ -380,15 +386,7 @@ func (p *Proxy) refreshModelsCache() {
 			continue
 		}
 
-		var models []ModelInfo
-		var err error
-
-		models, err = p.fetchModelsFromEndpoint(ep)
-		if err != nil {
-			logger.Debug("Background refresh: failed to fetch models from %s: %v", ep.Name, err)
-			models = p.getDefaultModels(ep)
-		}
-
+		models, _ := p.getModelsForEndpoint(ep)
 		allModels = append(allModels, models...)
 	}
 

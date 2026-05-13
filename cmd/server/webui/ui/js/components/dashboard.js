@@ -83,10 +83,11 @@ class Dashboard {
 
     updateStats(stats) {
         const totalRequests = stats.TotalRequests || 0;
-        const totalErrors = stats.TotalErrors || 0;
-        const successRate = totalRequests > 0
-            ? ((totalRequests - totalErrors) / totalRequests * 100).toFixed(1)
+        const totalSuccess = stats.TotalSuccess || 0;
+        const rawSuccessRate = totalRequests > 0
+            ? (totalSuccess / totalRequests * 100)
             : 0;
+        const successRate = Math.max(0, Math.min(100, rawSuccessRate)).toFixed(1);
 
         document.getElementById('stat-requests').textContent = formatNumber(totalRequests);
         document.getElementById('stat-success').textContent = successRate + '%';

@@ -125,8 +125,8 @@ func TestQuotaExhaustedUsesImmediateRequestLocalFailoverWithoutBackoff(t *testin
 	if got := rec.Header().Get(headerCCNexusAttempt); got != "2" {
 		t.Fatalf("expected quota exhausted fallback on second overall attempt, got attempt header %q", got)
 	}
-	if got := p.GetCurrentEndpointName(); got != "Primary" {
-		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected global current endpoint to switch to Fallback, got %q", got)
 	}
 
 	logs := joinedProxyLogs()
@@ -143,8 +143,8 @@ func TestQuotaExhaustedUsesImmediateRequestLocalFailoverWithoutBackoff(t *testin
 	if strings.Contains(logs, "Backing off before retry") {
 		t.Fatalf("expected quota exhaustion not to back off, got logs:\n%s", logs)
 	}
-	if strings.Contains(logs, "[SWITCH]") {
-		t.Fatalf("expected no global switch log during quota failover, got logs:\n%s", logs)
+	if !strings.Contains(logs, "[AUTO SWITCH]") {
+		t.Fatalf("expected global auto switch log during quota failover, got logs:\n%s", logs)
 	}
 }
 
@@ -196,8 +196,8 @@ func TestAPIKeyUnauthorizedUsesImmediateRequestLocalFailover(t *testing.T) {
 	if got := rec.Header().Get(headerCCNexusAttempt); got != "2" {
 		t.Fatalf("expected auth failure fallback on second overall attempt, got attempt header %q", got)
 	}
-	if got := p.GetCurrentEndpointName(); got != "Primary" {
-		t.Fatalf("expected request-local failover to keep global current endpoint Primary, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected endpoint auth failure to switch global current endpoint to Fallback, got %q", got)
 	}
 	p.cooldownMu.RLock()
 	cooldown, cooled := p.endpointCooldowns["Primary"]

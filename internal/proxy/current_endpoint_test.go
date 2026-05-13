@@ -230,6 +230,37 @@ func TestManualSwitchClearsEndpointCooldown(t *testing.T) {
 	}
 }
 
+func TestManualSwitchToCurrentEndpointIsFastNoopAndClearsCooldown(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	})
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+	p.markEndpointCooldown("A", "quota_exhausted", time.Hour, requestObservability{RequestID: "req-manual-noop"}, 1)
+
+	var events []EndpointCurrentEvent
+	p.SetOnCurrentEndpointChanged(func(event EndpointCurrentEvent) {
+		events = append(events, event)
+	})
+
+	if err := p.SetCurrentEndpoint("A"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+	if got := p.GetCurrentEndpointName(); got != "A" {
+		t.Fatalf("expected current endpoint A, got %q", got)
+	}
+	p.cooldownMu.RLock()
+	_, stillCooled := p.endpointCooldowns["A"]
+	p.cooldownMu.RUnlock()
+	if stillCooled {
+		t.Fatal("expected no-op manual switch to clear endpoint cooldown")
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no current endpoint event for no-op switch, got %#v", events)
+	}
+}
+
 func TestCooldownDurationForFailureReasons(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateFailover(&config.FailoverConfig{

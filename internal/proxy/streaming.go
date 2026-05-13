@@ -133,6 +133,47 @@ func (s *downstreamStreamSession) WriteError(message string) error {
 	return s.Write([]byte(fmt.Sprintf("event: error\ndata: %s\n\n", payload)))
 }
 
+func writeDownstreamStreamFailure(streamSession *downstreamStreamSession, clientFormat ClientFormat, transformerName string, code string, message string) error {
+	if streamSession == nil {
+		return nil
+	}
+	if shouldWriteResponsesStreamFailure(clientFormat, transformerName) {
+		return streamSession.Write(buildResponsesStreamFailureEvent(code, message))
+	}
+	return streamSession.WriteError(message)
+}
+
+func shouldWriteResponsesStreamFailure(clientFormat ClientFormat, transformerName string) bool {
+	return clientFormat == ClientFormatOpenAIResponses || shouldEnsureResponsesStreamCompletion(transformerName)
+}
+
+func buildResponsesStreamFailureEvent(code string, message string) []byte {
+	code = sanitizeLogField(code)
+	if code == "" {
+		code = "upstream_stream_error"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "stream failed"
+	}
+	payload := map[string]interface{}{
+		"type": "response.failed",
+		"response": map[string]interface{}{
+			"id":         "resp_ccnexus_failed",
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "failed",
+			"error": map[string]interface{}{
+				"code":    code,
+				"message": message,
+			},
+			"output": []interface{}{},
+			"usage":  nil,
+		},
+	}
+	encoded, _ := json.Marshal(payload)
+	return []byte(fmt.Sprintf("event: response.failed\ndata: %s\n\ndata: [DONE]\n\n", encoded))
+}
+
 func (s *downstreamStreamSession) Close() {
 	if s == nil {
 		return
@@ -274,6 +315,9 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 	var outputText strings.Builder
 	eventCount := 0
 	streamDone := false
+	sawDoneMarker := false
+	responseCompletedSeen := false
+	responseID := ""
 	semanticDataSeen := false
 	emptyKind := ""
 
@@ -304,11 +348,46 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 		return nil
 	}
 
+	writeSyntheticResponsesCompletion := func(includeDone bool) error {
+		if !shouldEnsureResponsesStreamCompletion(transformerName) || responseCompletedSeen {
+			return nil
+		}
+		if inputTokens == 0 && bodyBytes != nil {
+			inputTokens = p.estimateInputTokens(bodyBytes)
+			if streamCtx != nil {
+				streamCtx.InputTokens = inputTokens
+			}
+		}
+		if outputTokens == 0 && outputText.Len() > 0 {
+			outputTokens = tokencount.EstimateOutputTokens(outputText.String())
+			if streamCtx != nil {
+				streamCtx.OutputTokens = outputTokens
+			}
+		}
+		completionEvent := buildSyntheticResponsesCompletionEvent(responseID, inputTokens, outputTokens, outputText.String())
+		streamInspection := inspectSemanticStreamEvent(completionEvent)
+		if writeErr := writeTransformedEvent(completionEvent, streamInspection.HasOutput || result.WroteSemanticData); writeErr != nil {
+			return writeErr
+		}
+		responseCompletedSeen = true
+		if result.Err == nil {
+			result.Completed = true
+			result.Reason = streamFinishCompleted
+		}
+		if includeDone {
+			if writeErr := writeTransformedEvent([]byte("data: [DONE]\n\n"), false); writeErr != nil {
+				return writeErr
+			}
+		}
+		return nil
+	}
+
 	for scanner.Scan() && !streamDone {
 		line := scanner.Text()
 
 		if strings.Contains(line, "data: [DONE]") {
 			streamDone = true
+			sawDoneMarker = true
 			result.Completed = true
 			result.Reason = streamFinishCompleted
 
@@ -322,9 +401,20 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				// Inject message_delta event with usage
-				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-				if writeErr := writeTransformedEvent([]byte(deltaEvent), false); writeErr != nil {
+				if shouldInjectClaudeMessageDeltaUsage(transformerName) {
+					// Inject message_delta event with usage
+					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+					if writeErr := writeTransformedEvent([]byte(deltaEvent), false); writeErr != nil {
+						result.Completed = false
+						result.Reason = streamFinishDownstreamWriteFailed
+						result.Err = writeErr
+						break
+					}
+				}
+			}
+
+			if result.WroteSemanticData && !responseCompletedSeen {
+				if writeErr := writeSyntheticResponsesCompletion(false); writeErr != nil {
 					result.Completed = false
 					result.Reason = streamFinishDownstreamWriteFailed
 					result.Err = writeErr
@@ -339,6 +429,7 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
 			if err == nil && len(transformedEvent) > 0 {
 				logger.DebugLog("[%s] SSE Event #%d (Transformed): %s", endpoint.Name, eventCount+1, string(transformedEvent))
+				updateResponsesStreamCompletionState(transformedEvent, &responseID, &responseCompletedSeen)
 				streamInspection := inspectSemanticStreamEvent(transformedEvent)
 				if streamInspection.EmptyKind != "" {
 					emptyKind = streamInspection.EmptyKind
@@ -381,13 +472,15 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 					streamCtx.OutputTokens = outputTokens
 				}
 
-				// Inject message_delta event with usage before message_stop
-				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
-				if writeErr := writeTransformedEvent([]byte(deltaEvent), false); writeErr != nil {
-					result.Reason = streamFinishDownstreamWriteFailed
-					result.Err = writeErr
-					streamDone = true
-					break
+				if shouldInjectClaudeMessageDeltaUsage(transformerName) {
+					// Inject message_delta event with usage before message_stop
+					deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+					if writeErr := writeTransformedEvent([]byte(deltaEvent), false); writeErr != nil {
+						result.Reason = streamFinishDownstreamWriteFailed
+						result.Err = writeErr
+						streamDone = true
+						break
+					}
 				}
 			}
 
@@ -402,6 +495,7 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 
 				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
 				p.extractTextFromEvent(transformedEvent, &outputText)
+				updateResponsesStreamCompletionState(transformedEvent, &responseID, &responseCompletedSeen)
 				streamInspection := inspectSemanticStreamEvent(transformedEvent)
 				semanticEvent := streamInspection.HasOutput
 				if streamInspection.EmptyKind != "" {
@@ -426,7 +520,63 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if scanner.Err() == nil && !streamDone && buffer.Len() > 0 && result.Err == nil {
+		eventCount++
+		eventData := buffer.Bytes()
+		logger.DebugLog("[%s] SSE Event #%d (Original EOF): %s", endpoint.Name, eventCount, string(eventData))
+
+		p.captureCodexRateLimitsFromEvent(endpoint, credentialID, eventData)
+		p.extractTokensFromEvent(eventData, &inputTokens, &outputTokens)
+
+		isMessageStop := p.isMessageStopEvent(eventData)
+		if isMessageStop && outputTokens == 0 && outputText.Len() > 0 {
+			outputTokens = tokencount.EstimateOutputTokens(outputText.String())
+			logger.Debug("[%s] Token fallback before EOF message_stop: estimated output_tokens=%d", endpoint.Name, outputTokens)
+			if streamCtx != nil {
+				streamCtx.OutputTokens = outputTokens
+			}
+			if shouldInjectClaudeMessageDeltaUsage(transformerName) {
+				deltaEvent := fmt.Sprintf("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}\n\n", outputTokens)
+				if writeErr := writeTransformedEvent([]byte(deltaEvent), false); writeErr != nil {
+					result.Reason = streamFinishDownstreamWriteFailed
+					result.Err = writeErr
+				}
+			}
+		}
+
+		if result.Err == nil {
+			transformedEvent, err := p.transformStreamEvent(eventData, trans, transformerName, streamCtx)
+			if err != nil {
+				logger.Error("[%s] Failed to transform EOF SSE event: %v", endpoint.Name, err)
+				result.Reason = streamFinishTransformFailed
+				result.Err = err
+			} else if len(transformedEvent) > 0 {
+				logger.DebugLog("[%s] SSE Event #%d (Transformed EOF): %s", endpoint.Name, eventCount, string(transformedEvent))
+				p.extractTokensFromEvent(transformedEvent, &inputTokens, &outputTokens)
+				p.extractTextFromEvent(transformedEvent, &outputText)
+				updateResponsesStreamCompletionState(transformedEvent, &responseID, &responseCompletedSeen)
+				streamInspection := inspectSemanticStreamEvent(transformedEvent)
+				if streamInspection.EmptyKind != "" {
+					emptyKind = streamInspection.EmptyKind
+				}
+				if writeErr := writeTransformedEvent(transformedEvent, streamInspection.HasOutput); writeErr != nil {
+					if strings.Contains(writeErr.Error(), "broken pipe") || strings.Contains(writeErr.Error(), "connection reset") {
+						logger.Debug("[%s] Client disconnected: %v", endpoint.Name, writeErr)
+						result.Reason = streamFinishClientCanceled
+					} else {
+						logger.Error("[%s] Failed to write transformed EOF event: %v", endpoint.Name, writeErr)
+						result.Reason = streamFinishDownstreamWriteFailed
+					}
+					result.Err = writeErr
+				}
+			}
+		}
+		buffer.Reset()
+	}
+
+	scannerErr := scanner.Err()
+	if scannerErr != nil {
+		err := scannerErr
 		errMsg := err.Error()
 		result.Err = err
 		if isClientCanceled(ctx, err) {
@@ -449,6 +599,43 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 		} else {
 			result.Reason = streamFinishUpstreamStreamError
 			logger.Error("[%s] Scanner error: %v", endpoint.Name, err)
+		}
+	}
+	if scannerErr == nil &&
+		shouldEnsureResponsesStreamCompletion(transformerName) &&
+		result.WroteSemanticData &&
+		!responseCompletedSeen &&
+		!sawDoneMarker &&
+		result.Err == nil {
+		if writeErr := writeSyntheticResponsesCompletion(true); writeErr != nil {
+			result.Reason = streamFinishDownstreamWriteFailed
+			result.Err = writeErr
+		} else {
+			result.Completed = false
+			result.Reason = streamFinishUpstreamStreamError
+			result.Err = fmt.Errorf("stream closed before response.completed")
+			logger.Warn("[%s] Upstream stream closed before response.completed; sent synthetic completion and marked endpoint failed", endpoint.Name)
+		}
+	}
+	if scannerErr == nil &&
+		shouldEnsureResponsesStreamCompletion(transformerName) &&
+		responseCompletedSeen &&
+		!sawDoneMarker &&
+		result.Err == nil {
+		if writeErr := writeTransformedEvent([]byte("data: [DONE]\n\n"), false); writeErr != nil {
+			result.Reason = streamFinishDownstreamWriteFailed
+			result.Err = writeErr
+		} else {
+			result.Completed = true
+			result.Reason = streamFinishCompleted
+		}
+	}
+	if scannerErr != nil &&
+		shouldEnsureResponsesStreamCompletion(transformerName) &&
+		result.WroteSemanticData &&
+		!responseCompletedSeen {
+		if writeErr := writeSyntheticResponsesCompletion(true); writeErr != nil {
+			logger.Debug("[%s] Failed to write synthetic completion after stream error: %v", endpoint.Name, writeErr)
 		}
 	}
 
@@ -490,8 +677,18 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 	var completedPayload []byte
 	var lastJSONPayload []byte
 	chatAccumulator := newOpenAIChatStreamAccumulator()
+	responsesAccumulator := newOpenAIResponsesStreamAccumulator()
+	sseEventType := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			sseEventType = ""
+			continue
+		}
+		if parsedEventType := sseEventTypeFromLine(line); parsedEventType != "" {
+			sseEventType = parsedEventType
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -500,12 +697,19 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 			continue
 		}
 		p.captureCodexRateLimitsFromEvent(endpoint, credentialID, []byte("data: "+jsonData+"\n\n"))
-		lastJSONPayload = []byte(jsonData)
 
 		var event map[string]interface{}
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			lastJSONPayload = []byte(jsonData)
 			continue
 		}
+		ensureSSEEventType(event, sseEventType)
+		if normalizedPayload, err := json.Marshal(event); err == nil {
+			lastJSONPayload = normalizedPayload
+		} else {
+			lastJSONPayload = []byte(jsonData)
+		}
+		responsesAccumulator.addEvent(event)
 		if chatAccumulator.addChunk(event) {
 			continue
 		}
@@ -520,7 +724,7 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 			}
 			completedPayload = payload
 		} else {
-			completedPayload = []byte(jsonData)
+			completedPayload = lastJSONPayload
 		}
 		break
 	}
@@ -537,6 +741,11 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 		}
 	}
 	if len(completedPayload) == 0 {
+		if payload, ok := responsesAccumulator.payload(); ok {
+			completedPayload = payload
+		}
+	}
+	if len(completedPayload) == 0 {
 		if len(lastJSONPayload) == 0 {
 			return 0, 0, "", fmt.Errorf("stream closed before response.completed")
 		}
@@ -544,6 +753,7 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 		// provide final JSON payload in the stream.
 		completedPayload = lastJSONPayload
 	}
+	completedPayload = responsesAccumulator.patchCompletedPayload(completedPayload)
 
 	transformedResp, err := trans.TransformResponse(completedPayload, false)
 	if err != nil {
@@ -614,6 +824,494 @@ type openAIChatStreamToolCall struct {
 	callType  string
 	name      string
 	arguments string
+}
+
+type openAIResponsesStreamAccumulator struct {
+	deltaText     string
+	doneText      string
+	itemText      string
+	responseID    string
+	usage         map[string]interface{}
+	functionCalls map[int]*openAIResponsesFunctionCall
+	functionOrder []int
+	genericItems  map[int]map[string]interface{}
+	outputOrder   []int
+}
+
+type openAIResponsesFunctionCall struct {
+	index     int
+	id        string
+	callID    string
+	name      string
+	arguments string
+	status    string
+}
+
+func newOpenAIResponsesStreamAccumulator() *openAIResponsesStreamAccumulator {
+	return &openAIResponsesStreamAccumulator{
+		functionCalls: make(map[int]*openAIResponsesFunctionCall),
+		genericItems:  make(map[int]map[string]interface{}),
+	}
+}
+
+func (a *openAIResponsesStreamAccumulator) addEvent(event map[string]interface{}) {
+	if a == nil || event == nil {
+		return
+	}
+	eventType, _ := event["type"].(string)
+	if response, ok := event["response"].(map[string]interface{}); ok {
+		if id, ok := response["id"].(string); ok && id != "" && a.responseID == "" {
+			a.responseID = id
+		}
+		if usage, ok := response["usage"].(map[string]interface{}); ok && len(usage) > 0 {
+			a.usage = usage
+		}
+	}
+	switch eventType {
+	case "response.created":
+		if response, ok := event["response"].(map[string]interface{}); ok {
+			if id, ok := response["id"].(string); ok && id != "" && a.responseID == "" {
+				a.responseID = id
+			}
+		}
+	case "response.output_text.delta":
+		if delta, ok := event["delta"].(string); ok {
+			a.deltaText += delta
+		}
+	case "response.output_text.done":
+		if a.deltaText == "" {
+			if text, ok := event["text"].(string); ok {
+				a.doneText += text
+			}
+		}
+	case "response.content_part.done":
+		if a.deltaText == "" && a.doneText == "" {
+			if part, ok := event["part"].(map[string]interface{}); ok {
+				a.itemText += responseContentPartText(part)
+			}
+		}
+	case "response.output_item.done":
+		if item, ok := event["item"].(map[string]interface{}); ok {
+			switch itemType := responseOutputItemType(item); {
+			case itemType == "function_call":
+				a.addFunctionCallItem(event, item)
+				return
+			case isResponsesGenericOutputItemType(itemType):
+				a.addOutputItem(event, item)
+				return
+			}
+		}
+		if a.deltaText == "" && a.doneText == "" {
+			if item, ok := event["item"].(map[string]interface{}); ok {
+				a.itemText += responseOutputItemText(item)
+			}
+		}
+	case "response.output_item.added":
+		if item, ok := event["item"].(map[string]interface{}); ok {
+			switch itemType := responseOutputItemType(item); {
+			case itemType == "function_call":
+				a.addFunctionCallItem(event, item)
+			case isResponsesGenericOutputItemType(itemType):
+				a.addOutputItem(event, item)
+			}
+		}
+	case "response.function_call_arguments.delta":
+		if delta, ok := event["delta"].(string); ok && delta != "" {
+			a.addFunctionCallArguments(event, delta, false)
+		}
+	case "response.function_call_arguments.done":
+		if arguments, ok := event["arguments"].(string); ok {
+			a.addFunctionCallArguments(event, arguments, true)
+		}
+	case "response.custom_tool_call_input.delta":
+		if delta, ok := event["delta"].(string); ok && delta != "" {
+			a.addOutputItemInput(event, delta, false)
+		}
+	case "response.custom_tool_call_input.done":
+		if input, ok := event["input"].(string); ok {
+			a.addOutputItemInput(event, input, true)
+		}
+	}
+}
+
+func (a *openAIResponsesStreamAccumulator) text() string {
+	if a == nil {
+		return ""
+	}
+	if a.deltaText != "" {
+		return a.deltaText
+	}
+	if a.doneText != "" {
+		return a.doneText
+	}
+	return a.itemText
+}
+
+func (a *openAIResponsesStreamAccumulator) payload() ([]byte, bool) {
+	output := a.outputItems()
+	if a == nil || len(output) == 0 {
+		return nil, false
+	}
+
+	responseID := strings.TrimSpace(a.responseID)
+	if responseID == "" {
+		responseID = "resp_ccnexus_synthetic"
+	}
+	usage := a.usage
+	if usage == nil {
+		usage = map[string]interface{}{
+			"input_tokens":  0,
+			"output_tokens": 0,
+			"total_tokens":  0,
+		}
+	}
+	payload := map[string]interface{}{
+		"id":     responseID,
+		"object": "response",
+		"status": "completed",
+		"usage":  usage,
+		"output": output,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
+}
+
+func (a *openAIResponsesStreamAccumulator) patchCompletedPayload(payload []byte) []byte {
+	outputItems := a.outputItems()
+	if len(outputItems) == 0 || len(payload) == 0 {
+		return payload
+	}
+	if inspection := inspectSemanticResponse(payload); inspection.Recognized && inspection.HasOutput {
+		return payload
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return payload
+	}
+	output, _ := body["output"].([]interface{})
+	if output == nil {
+		output = []interface{}{}
+	}
+
+	for _, item := range outputItems {
+		output = append(output, item)
+	}
+	body["output"] = output
+
+	patched, err := json.Marshal(body)
+	if err != nil {
+		return payload
+	}
+	return patched
+}
+
+func (a *openAIResponsesStreamAccumulator) outputItems() []map[string]interface{} {
+	if a == nil {
+		return nil
+	}
+
+	var output []map[string]interface{}
+	text := a.text()
+	if strings.TrimSpace(text) != "" {
+		responseID := strings.TrimSpace(a.responseID)
+		messageID := "msg_stream_aggregated"
+		if responseID != "" {
+			messageID = "msg_" + responseID + "_stream"
+		}
+		output = append(output, map[string]interface{}{
+			"id":     messageID,
+			"type":   "message",
+			"status": "completed",
+			"role":   "assistant",
+			"content": []interface{}{
+				map[string]interface{}{
+					"type": "output_text",
+					"text": text,
+				},
+			},
+		})
+	}
+
+	for _, call := range a.validFunctionCalls() {
+		arguments := strings.TrimSpace(call.arguments)
+		if arguments == "" {
+			arguments = "{}"
+		}
+		output = append(output, map[string]interface{}{
+			"type":      "function_call",
+			"id":        call.id,
+			"call_id":   call.callID,
+			"name":      call.name,
+			"arguments": arguments,
+			"status":    "completed",
+		})
+	}
+	for _, item := range a.validOutputItems() {
+		output = append(output, item)
+	}
+
+	return output
+}
+
+func (a *openAIResponsesStreamAccumulator) addFunctionCallItem(event map[string]interface{}, item map[string]interface{}) {
+	index, ok := responseEventOutputIndex(event)
+	if !ok {
+		index = a.indexForFunctionCallItem(item)
+	}
+	if index < 0 {
+		index = len(a.functionOrder)
+	}
+	call := a.ensureFunctionCall(index)
+	if id, ok := item["id"].(string); ok && strings.TrimSpace(id) != "" {
+		call.id = id
+	}
+	if callID, ok := item["call_id"].(string); ok && strings.TrimSpace(callID) != "" {
+		call.callID = callID
+	}
+	if name, ok := item["name"].(string); ok && strings.TrimSpace(name) != "" {
+		call.name = name
+	}
+	if arguments, ok := item["arguments"].(string); ok && strings.TrimSpace(arguments) != "" {
+		call.arguments = arguments
+	}
+	if status, ok := item["status"].(string); ok && strings.TrimSpace(status) != "" {
+		call.status = status
+	}
+	if call.callID == "" {
+		call.callID = call.id
+	}
+	if call.id == "" {
+		call.id = call.callID
+	}
+}
+
+func (a *openAIResponsesStreamAccumulator) addFunctionCallArguments(event map[string]interface{}, arguments string, replace bool) {
+	index, ok := responseEventOutputIndex(event)
+	if !ok {
+		index = a.lastFunctionCallIndex()
+	}
+	if index < 0 {
+		index = len(a.functionOrder)
+	}
+	call := a.ensureFunctionCall(index)
+	if replace {
+		call.arguments = arguments
+	} else {
+		call.arguments += arguments
+	}
+}
+
+func (a *openAIResponsesStreamAccumulator) ensureFunctionCall(index int) *openAIResponsesFunctionCall {
+	if a.functionCalls == nil {
+		a.functionCalls = make(map[int]*openAIResponsesFunctionCall)
+	}
+	if call, ok := a.functionCalls[index]; ok {
+		return call
+	}
+	call := &openAIResponsesFunctionCall{index: index}
+	a.functionCalls[index] = call
+	a.functionOrder = append(a.functionOrder, index)
+	return call
+}
+
+func (a *openAIResponsesStreamAccumulator) addOutputItem(event map[string]interface{}, item map[string]interface{}) {
+	index, ok := responseEventOutputIndex(event)
+	if !ok {
+		index = a.indexForOutputItem(item)
+	}
+	if index < 0 {
+		index = len(a.outputOrder)
+	}
+	dst := a.ensureOutputItem(index)
+	for key, value := range item {
+		dst[key] = value
+	}
+}
+
+func (a *openAIResponsesStreamAccumulator) addOutputItemInput(event map[string]interface{}, input string, replace bool) {
+	index, ok := responseEventOutputIndex(event)
+	if !ok {
+		index = a.lastOutputItemIndex()
+	}
+	if index < 0 {
+		return
+	}
+	item := a.ensureOutputItem(index)
+	if replace {
+		item["input"] = input
+		return
+	}
+	existing, _ := item["input"].(string)
+	item["input"] = existing + input
+}
+
+func (a *openAIResponsesStreamAccumulator) ensureOutputItem(index int) map[string]interface{} {
+	if a.genericItems == nil {
+		a.genericItems = make(map[int]map[string]interface{})
+	}
+	if item, ok := a.genericItems[index]; ok {
+		return item
+	}
+	item := map[string]interface{}{}
+	a.genericItems[index] = item
+	a.outputOrder = append(a.outputOrder, index)
+	return item
+}
+
+func (a *openAIResponsesStreamAccumulator) validOutputItems() []map[string]interface{} {
+	if a == nil {
+		return nil
+	}
+	items := make([]map[string]interface{}, 0, len(a.outputOrder))
+	for _, index := range a.outputOrder {
+		item := a.genericItems[index]
+		if !hasValidResponsesToolOutputItem(item) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (a *openAIResponsesStreamAccumulator) indexForOutputItem(item map[string]interface{}) int {
+	if a == nil || item == nil {
+		return -1
+	}
+	id, _ := item["id"].(string)
+	callID, _ := item["call_id"].(string)
+	name, _ := item["name"].(string)
+	for _, index := range a.outputOrder {
+		existing := a.genericItems[index]
+		if existing == nil {
+			continue
+		}
+		if strings.TrimSpace(id) != "" && stringFromInterface(existing["id"]) == id {
+			return index
+		}
+		if strings.TrimSpace(callID) != "" && stringFromInterface(existing["call_id"]) == callID {
+			return index
+		}
+		if strings.TrimSpace(name) != "" && stringFromInterface(existing["name"]) == name {
+			return index
+		}
+	}
+	return -1
+}
+
+func (a *openAIResponsesStreamAccumulator) lastOutputItemIndex() int {
+	if a == nil || len(a.outputOrder) == 0 {
+		return -1
+	}
+	return a.outputOrder[len(a.outputOrder)-1]
+}
+
+func (a *openAIResponsesStreamAccumulator) validFunctionCalls() []*openAIResponsesFunctionCall {
+	if a == nil {
+		return nil
+	}
+	calls := make([]*openAIResponsesFunctionCall, 0, len(a.functionOrder))
+	for _, index := range a.functionOrder {
+		call := a.functionCalls[index]
+		if call == nil {
+			continue
+		}
+		if strings.TrimSpace(call.id) == "" && strings.TrimSpace(call.callID) == "" && strings.TrimSpace(call.name) == "" {
+			continue
+		}
+		calls = append(calls, call)
+	}
+	return calls
+}
+
+func (a *openAIResponsesStreamAccumulator) indexForFunctionCallItem(item map[string]interface{}) int {
+	if a == nil || item == nil {
+		return -1
+	}
+	id, _ := item["id"].(string)
+	callID, _ := item["call_id"].(string)
+	name, _ := item["name"].(string)
+	for _, index := range a.functionOrder {
+		call := a.functionCalls[index]
+		if call == nil {
+			continue
+		}
+		if strings.TrimSpace(id) != "" && call.id == id {
+			return index
+		}
+		if strings.TrimSpace(callID) != "" && call.callID == callID {
+			return index
+		}
+		if strings.TrimSpace(name) != "" && call.name == name {
+			return index
+		}
+	}
+	return -1
+}
+
+func (a *openAIResponsesStreamAccumulator) lastFunctionCallIndex() int {
+	if a == nil || len(a.functionOrder) == 0 {
+		return -1
+	}
+	return a.functionOrder[len(a.functionOrder)-1]
+}
+
+func responseEventOutputIndex(event map[string]interface{}) (int, bool) {
+	if event == nil {
+		return 0, false
+	}
+	switch value := event["output_index"].(type) {
+	case float64:
+		return int(value), true
+	case int:
+		return value, true
+	case json.Number:
+		index, err := value.Int64()
+		return int(index), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func responseOutputItemType(item map[string]interface{}) string {
+	if item == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(stringFromInterface(item["type"])))
+}
+
+func isResponsesGenericOutputItemType(itemType string) bool {
+	itemType = strings.ToLower(strings.TrimSpace(itemType))
+	return itemType != "" && itemType != "message" && itemType != "reasoning" && itemType != "function_call"
+}
+
+func responseOutputItemText(item map[string]interface{}) string {
+	content, ok := item["content"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var builder strings.Builder
+	for _, rawPart := range content {
+		part, ok := rawPart.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		builder.WriteString(responseContentPartText(part))
+	}
+	return builder.String()
+}
+
+func responseContentPartText(part map[string]interface{}) string {
+	if part == nil {
+		return ""
+	}
+	if text, ok := part["text"].(string); ok {
+		return text
+	}
+	return ""
 }
 
 func newOpenAIChatStreamAccumulator() *openAIChatStreamAccumulator {
@@ -855,16 +1553,67 @@ func formatRequestSize(bytes int) string {
 
 // transformStreamEvent transforms a single SSE event
 func (p *Proxy) transformStreamEvent(eventData []byte, trans transformer.Transformer, transformerName string, streamCtx *transformer.StreamContext) ([]byte, error) {
+	eventData = normalizeSSEDataEventTypes(eventData)
 	// Use the unified interface method instead of type assertion switch
 	// All transformers now implement TransformResponseWithContext
 	return trans.TransformResponseWithContext(eventData, true, streamCtx)
 }
 
-// extractTokensFromEvent extracts token counts from SSE event
-func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputTokens *int) {
+func shouldEnsureResponsesStreamCompletion(transformerName string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(transformerName)), "cx_resp_")
+}
+
+func shouldInjectClaudeMessageDeltaUsage(transformerName string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(transformerName)), "cc_")
+}
+
+func buildSyntheticResponsesCompletionEvent(responseID string, inputTokens int, outputTokens int, outputText string) []byte {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		responseID = "resp_ccnexus_synthetic"
+	}
+
+	output := make([]map[string]interface{}, 0, 1)
+	if outputText != "" {
+		output = append(output, map[string]interface{}{
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"content": []map[string]interface{}{
+				{
+					"type": "output_text",
+					"text": outputText,
+				},
+			},
+		})
+	}
+	payload := map[string]interface{}{
+		"type": "response.completed",
+		"response": map[string]interface{}{
+			"id":     responseID,
+			"object": "response",
+			"status": "completed",
+			"usage": map[string]interface{}{
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"total_tokens":  inputTokens + outputTokens,
+			},
+			"output": output,
+		},
+	}
+	encoded, _ := json.Marshal(payload)
+	return []byte(fmt.Sprintf("data: %s\n\n", encoded))
+}
+
+func updateResponsesStreamCompletionState(eventData []byte, responseID *string, completed *bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(eventData))
+	sseEventType := ""
 	for scanner.Scan() {
 		line := scanner.Text()
+		if parsedEventType := sseEventTypeFromLine(line); parsedEventType != "" {
+			sseEventType = parsedEventType
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -877,6 +1626,111 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
 			continue
 		}
+		ensureSSEEventType(event, sseEventType)
+
+		if eventType, _ := event["type"].(string); eventType == "response.completed" && completed != nil {
+			*completed = true
+		}
+		if response, ok := event["response"].(map[string]interface{}); ok {
+			if id, ok := response["id"].(string); ok && strings.TrimSpace(id) != "" && responseID != nil && *responseID == "" {
+				*responseID = id
+			}
+		}
+		if id, ok := event["id"].(string); ok && strings.TrimSpace(id) != "" && responseID != nil && *responseID == "" {
+			*responseID = id
+		}
+	}
+}
+
+func normalizeSSEDataEventTypes(eventData []byte) []byte {
+	if len(eventData) == 0 {
+		return eventData
+	}
+
+	lines := strings.Split(string(eventData), "\n")
+	eventType := ""
+	changed := false
+	for i, line := range lines {
+		if parsedEventType := sseEventTypeFromLine(line); parsedEventType != "" {
+			eventType = parsedEventType
+			continue
+		}
+		if eventType == "" {
+			continue
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "data:") {
+			continue
+		}
+		jsonData := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+		if jsonData == "" || jsonData == "[DONE]" || !strings.HasPrefix(jsonData, "{") {
+			continue
+		}
+
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			continue
+		}
+		if existingType, _ := event["type"].(string); strings.TrimSpace(existingType) != "" {
+			continue
+		}
+		event["type"] = eventType
+
+		normalized, err := json.Marshal(event)
+		if err != nil {
+			continue
+		}
+		lines[i] = "data: " + string(normalized)
+		changed = true
+	}
+	if !changed {
+		return eventData
+	}
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func sseEventTypeFromLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "event:") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+}
+
+func ensureSSEEventType(event map[string]interface{}, eventType string) {
+	if event == nil || strings.TrimSpace(eventType) == "" {
+		return
+	}
+	if existingType, _ := event["type"].(string); strings.TrimSpace(existingType) != "" {
+		return
+	}
+	event["type"] = strings.TrimSpace(eventType)
+}
+
+// extractTokensFromEvent extracts token counts from SSE event
+func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputTokens *int) {
+	scanner := bufio.NewScanner(bytes.NewReader(eventData))
+	sseEventType := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if parsedEventType := sseEventTypeFromLine(line); parsedEventType != "" {
+			sseEventType = parsedEventType
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		jsonData := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonData == "" || jsonData == "[DONE]" {
+			continue
+		}
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
+			continue
+		}
+		ensureSSEEventType(event, sseEventType)
 
 		applyUsage := func(usage map[string]interface{}) {
 			in, out := extractInputOutputTokens(usage)
@@ -927,8 +1781,13 @@ func (p *Proxy) extractTokensFromEvent(eventData []byte, inputTokens, outputToke
 // Enhanced to support both delta.text and content_block_delta formats
 func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *strings.Builder) {
 	scanner := bufio.NewScanner(bytes.NewReader(transformedEvent))
+	sseEventType := ""
 	for scanner.Scan() {
 		line := scanner.Text()
+		if parsedEventType := sseEventTypeFromLine(line); parsedEventType != "" {
+			sseEventType = parsedEventType
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -938,6 +1797,7 @@ func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *string
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
 			continue
 		}
+		ensureSSEEventType(event, sseEventType)
 
 		eventType, _ := event["type"].(string)
 
@@ -959,6 +1819,21 @@ func (p *Proxy) extractTextFromEvent(transformedEvent []byte, outputText *string
 		if eventType == "response.output_text.delta" {
 			if delta, ok := event["delta"].(string); ok {
 				outputText.WriteString(delta)
+			}
+		}
+		if eventType == "response.output_text.done" && outputText.Len() == 0 {
+			if text, ok := event["text"].(string); ok {
+				outputText.WriteString(text)
+			}
+		}
+		if eventType == "response.content_part.done" && outputText.Len() == 0 {
+			if part, ok := event["part"].(map[string]interface{}); ok {
+				outputText.WriteString(responseContentPartText(part))
+			}
+		}
+		if eventType == "response.output_item.done" && outputText.Len() == 0 {
+			if item, ok := event["item"].(map[string]interface{}); ok {
+				outputText.WriteString(responseOutputItemText(item))
 			}
 		}
 

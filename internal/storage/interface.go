@@ -3,20 +3,26 @@ package storage
 import "time"
 
 type Endpoint struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	APIUrl      string    `json:"apiUrl"`
-	APIKey      string    `json:"apiKey"`
-	AuthMode    string    `json:"authMode"`
-	Enabled     bool      `json:"enabled"`
-	Transformer string    `json:"transformer"`
-	Model       string    `json:"model"`
-	Thinking    string    `json:"thinking"`
-	ForceStream bool      `json:"forceStream"`
-	Remark      string    `json:"remark"`
-	SortOrder   int       `json:"sortOrder"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID                      int64     `json:"id"`
+	Name                    string    `json:"name"`
+	APIUrl                  string    `json:"apiUrl"`
+	APIKey                  string    `json:"apiKey"`
+	AuthMode                string    `json:"authMode"`
+	Enabled                 bool      `json:"enabled"`
+	Transformer             string    `json:"transformer"`
+	Model                   string    `json:"model"`
+	Thinking                string    `json:"thinking"`
+	ForceStream             bool      `json:"forceStream"`
+	AutoSelect              bool      `json:"autoSelect"`
+	SupportsOpenAIResponses bool      `json:"supportsOpenAIResponses"`
+	SupportsOpenAIChat      bool      `json:"supportsOpenAIChat"`
+	SupportsClaudeMessages  bool      `json:"supportsClaudeMessages"`
+	PreferredClaudeUpstream string    `json:"preferredClaudeUpstream"`
+	PreferredOpenAIUpstream string    `json:"preferredOpenAIUpstream"`
+	Remark                  string    `json:"remark"`
+	SortOrder               int       `json:"sortOrder"`
+	CreatedAt               time.Time `json:"createdAt"`
+	UpdatedAt               time.Time `json:"updatedAt"`
 }
 
 type EndpointCredential struct {
@@ -161,6 +167,7 @@ type Storage interface {
 	RecordDailyStat(stat *DailyStat) error
 	GetDailyStats(endpointName, startDate, endDate string) ([]DailyStat, error)
 	GetAllStats() (map[string][]DailyStat, error)
+	ClearStats() error
 	GetTotalStats() (int, map[string]*EndpointStats, error)
 	GetEndpointTotalStats(endpointName string) (*EndpointStats, error)
 	GetPeriodStatsAggregated(startDate, endDate string) (map[string]*EndpointStats, error)

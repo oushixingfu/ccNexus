@@ -90,6 +90,38 @@ func TestOpenAI2StreamToClaudeWithThinking(t *testing.T) {
 	}
 }
 
+func TestOpenAI2StreamToClaudeConvertsCustomToolCall(t *testing.T) {
+	ctx := transformer.NewStreamContext()
+	ctx.ModelName = "gpt-5.5"
+
+	chunks := []string{
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"ctc_1","call_id":"call_1","type":"custom_tool_call","name":"read_file","input":"","status":"in_progress"}}`,
+		`data: {"type":"response.custom_tool_call_input.delta","output_index":0,"delta":"{\"path\":\"AGENTS.md\"}"}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ctc_1","call_id":"call_1","type":"custom_tool_call","name":"read_file","input":"{\"path\":\"AGENTS.md\"}","status":"completed"}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8},"output":[]}}`,
+	}
+
+	var allEvents []string
+	for _, chunk := range chunks {
+		events, err := OpenAI2StreamToClaude([]byte(chunk), ctx)
+		if err != nil {
+			t.Fatalf("OpenAI2StreamToClaude failed: %v", err)
+		}
+		if len(events) > 0 {
+			allEvents = append(allEvents, string(events))
+		}
+	}
+
+	fullEvents := strings.Join(allEvents, "")
+	if !strings.Contains(fullEvents, `"type":"tool_use"`) ||
+		!strings.Contains(fullEvents, `"name":"read_file"`) ||
+		!strings.Contains(fullEvents, `"partial_json":"{\"path\":\"AGENTS.md\"}"`) ||
+		!strings.Contains(fullEvents, `"stop_reason":"tool_use"`) {
+		t.Fatalf("expected custom tool call to stream as Claude tool_use, got: %s", fullEvents)
+	}
+}
+
 func TestOpenAI2StreamToClaudeCompletesWithoutDone(t *testing.T) {
 	ctx := transformer.NewStreamContext()
 	ctx.ModelName = "claude-3-sonnet-20240229"
@@ -240,6 +272,58 @@ func TestClaudeReqToOpenAI2InjectsReasoningEffort(t *testing.T) {
 	}
 	if reasoning["effort"] != "high" {
 		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
+	}
+}
+
+func TestClaudeReqToOpenAI2UsesEffortLevelForCustomGateway(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"stream": true,
+		"messages": [{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2WithThinkingAndAPIURL([]byte(claudeReq), "gpt-5.5", "xhigh", "https://1052.cc.cd:5005")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2WithThinkingAndAPIURL failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+	if req["effortLevel"] != "xhigh" {
+		t.Fatalf("expected effortLevel=xhigh, got %#v", req["effortLevel"])
+	}
+	if _, ok := req["reasoning"]; ok {
+		t.Fatalf("did not expect reasoning for custom gateway, got %#v", req["reasoning"])
+	}
+}
+
+func TestClaudeReqToOpenAI2UsesReasoningForOfficialOpenAI(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"stream": true,
+		"messages": [{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2WithThinkingAndAPIURL([]byte(claudeReq), "gpt-5.5", "high", "https://api.openai.com/v1")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2WithThinkingAndAPIURL failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+	reasoning, ok := req["reasoning"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected reasoning object, got %#v", req["reasoning"])
+	}
+	if reasoning["effort"] != "high" {
+		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
+	}
+	if _, ok := req["effortLevel"]; ok {
+		t.Fatalf("did not expect effortLevel for official OpenAI, got %#v", req["effortLevel"])
 	}
 }
 
@@ -404,5 +488,32 @@ func TestClaudeReqToOpenAI2DefaultsToolChoiceAutoAfterToolResult(t *testing.T) {
 
 	if req["tool_choice"] != "auto" {
 		t.Fatalf("expected tool_choice=auto after tool_result, got %#v", req["tool_choice"])
+	}
+}
+
+func TestClaudeReqToOpenAI2PreservesZeroTemperature(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"stream": true,
+		"temperature": 0,
+		"messages": [{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := ClaudeReqToOpenAI2([]byte(claudeReq), "gpt-4.1")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+
+	temperature, ok := req["temperature"].(float64)
+	if !ok {
+		t.Fatalf("expected explicit temperature=0 to be preserved, got %#v", req["temperature"])
+	}
+	if temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", temperature)
 	}
 }

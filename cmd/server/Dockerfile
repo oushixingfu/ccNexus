@@ -14,14 +14,11 @@ COPY go.mod ./
 # 配置国内七牛云代理（最稳定）
 # go env -w GOPROXY=https://goproxy.cn,direct
 
-# Download dependencies (go.sum will be generated after tidy)
+# Download dependencies using the checked-in module files for reproducible builds
 RUN go env -w GO111MODULE=on && go env -w GOPROXY=https://goproxy.cn,direct && go mod download
 
 # Copy source code
 COPY . ./
-
-# Ensure module graph is complete (generates go.sum)
-RUN go mod tidy
 
 # Build the headless API server (webui is embedded via go:embed)
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o ccnexus-server ./cmd/server

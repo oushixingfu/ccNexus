@@ -51,6 +51,10 @@ func (p *Proxy) handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func (p *Proxy) handleNoContent(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GetStats returns current statistics
 func (p *Proxy) GetStats() *Stats {
 	return p.stats
@@ -185,6 +189,7 @@ func (p *Proxy) UpdateConfigPreservingCurrentName(cfg *config.Config, currentEnd
 
 	logger.Info("Configuration updated: %d endpoints configured", len(cfg.GetEndpoints()))
 	p.mu.Unlock()
+	p.RefreshHealthCheckWatchSet()
 	p.emitCurrentEndpointChanged(previousEndpointName, newEndpointName, "config_update")
 	return nil
 }

@@ -109,6 +109,10 @@ class APIClient {
         return this.request('GET', '/stats/trends');
     }
 
+    async clearStats() {
+        return this.request('DELETE', '/stats');
+    }
+
     // Configuration
     async getConfig() {
         return this.request('GET', '/config');

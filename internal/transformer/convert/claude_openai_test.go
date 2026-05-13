@@ -481,3 +481,29 @@ func TestClaudeReqToOpenAIThinkingOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeReqToOpenAIPreservesZeroTemperature(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-3-opus-20240229",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"max_tokens": 1024,
+		"temperature": 0
+	}`
+
+	openaiReqBytes, err := ClaudeReqToOpenAI([]byte(claudeReq), "gpt-4")
+	if err != nil {
+		t.Fatalf("ClaudeReqToOpenAI failed: %v", err)
+	}
+
+	var openaiReq transformer.OpenAIRequest
+	if err := json.Unmarshal(openaiReqBytes, &openaiReq); err != nil {
+		t.Fatalf("Failed to unmarshal OpenAI request: %v", err)
+	}
+
+	if openaiReq.Temperature == nil {
+		t.Fatal("expected explicit temperature=0 to be preserved")
+	}
+	if *openaiReq.Temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", *openaiReq.Temperature)
+	}
+}

@@ -1,4 +1,5 @@
 import { api } from '../api.js';
+import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
 import { formatNumber, formatTokens } from '../utils/formatters.js';
 import { t } from '../utils/i18n.js';
@@ -6,6 +7,7 @@ import { t } from '../utils/i18n.js';
 class Stats {
     constructor() {
         this.container = document.getElementById('view-container');
+        this.currentPeriod = 'daily';
         // 监听语言切换
         window.addEventListener('languageChanged', () => {
             if (state.get('currentView') === 'stats') {
@@ -19,10 +21,13 @@ class Stats {
             <div class="stats">
                 <h1>${t('stats.title')}</h1>
 
-                <div class="flex gap-2 mt-3 mb-3">
-                    <button class="btn btn-sm btn-primary period-btn active" data-period="daily">${t('stats.daily')}</button>
-                    <button class="btn btn-sm btn-secondary period-btn" data-period="weekly">${t('stats.weekly')}</button>
-                    <button class="btn btn-sm btn-secondary period-btn" data-period="monthly">${t('stats.monthly')}</button>
+                <div class="flex-between mt-3 mb-3">
+                    <div class="flex gap-2">
+                        <button class="btn btn-sm btn-primary period-btn active" data-period="daily">${t('stats.daily')}</button>
+                        <button class="btn btn-sm btn-secondary period-btn" data-period="weekly">${t('stats.weekly')}</button>
+                        <button class="btn btn-sm btn-secondary period-btn" data-period="monthly">${t('stats.monthly')}</button>
+                    </div>
+                    <button class="btn btn-sm btn-danger" id="clear-stats-btn">${t('stats.clearStats')}</button>
                 </div>
 
                 <div id="stats-content"></div>
@@ -40,12 +45,14 @@ class Stats {
                 this.loadStats(btn.dataset.period);
             });
         });
+        document.getElementById('clear-stats-btn').addEventListener('click', () => this.clearStats());
 
         await this.loadStats('daily');
     }
 
     async loadStats(period) {
         try {
+            this.currentPeriod = period;
             let data;
             switch (period) {
                 case 'daily':
@@ -62,6 +69,29 @@ class Stats {
             this.renderStats(data);
         } catch (error) {
             notifications.error(`${t('stats.failedToLoad')}: ${error.message}`);
+        }
+    }
+
+    async clearStats() {
+        if (!confirm(t('stats.confirmClear'))) {
+            return;
+        }
+
+        const clearButton = document.getElementById('clear-stats-btn');
+        if (clearButton) {
+            clearButton.disabled = true;
+        }
+
+        try {
+            await api.clearStats();
+            notifications.success(t('stats.clearSuccess'));
+            await this.loadStats(this.currentPeriod);
+        } catch (error) {
+            notifications.error(`${t('stats.failedToClear')}: ${error.message}`);
+        } finally {
+            if (clearButton) {
+                clearButton.disabled = false;
+            }
         }
     }
 

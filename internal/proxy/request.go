@@ -69,7 +69,7 @@ func prepareCCTransformer(endpoint config.Endpoint, endpointTransformer string) 
 		if endpoint.Model == "" {
 			return nil, fmt.Errorf("OpenAI2 transformer requires model field")
 		}
-		return cc.NewOpenAI2TransformerWithThinking(endpoint.Model, endpoint.Thinking), nil
+		return cc.NewOpenAI2TransformerWithAPIURL(endpoint.Model, endpoint.Thinking, endpoint.APIUrl), nil
 	case "gemini":
 		if endpoint.Model == "" {
 			return nil, fmt.Errorf("Gemini transformer requires model field")
@@ -146,6 +146,9 @@ func getTargetPath(originalPath string, endpoint config.Endpoint, transformedBod
 	case "cc_openai", "cx_chat_openai", "cx_resp_openai":
 		return providercompat.OpenAIChatTargetPath(endpoint.Transformer, endpoint.APIUrl)
 	case "cc_openai2", "cx_resp_openai2", "cx_chat_openai2":
+		if isResponsesCompactPath(originalPath) {
+			return "/v1/responses/compact"
+		}
 		return "/v1/responses"
 	case "cc_gemini", "cx_chat_gemini", "cx_resp_gemini":
 		var geminiReq struct {
@@ -426,7 +429,7 @@ func forceStreamInPayload(payload []byte) []byte {
 	return updated
 }
 
-func injectEndpointThinkingInPayload(payload []byte, transformerName string, thinking string) []byte {
+func injectEndpointThinkingInPayload(payload []byte, transformerName string, thinking string, apiURL string, endpointModel string) []byte {
 	effort := normalizeEndpointThinking(thinking)
 	if effort == "" {
 		return payload
@@ -448,12 +451,22 @@ func injectEndpointThinkingInPayload(payload []byte, transformerName string, thi
 	name := strings.ToLower(strings.TrimSpace(transformerName))
 	switch {
 	case strings.Contains(name, "openai2"):
-		reasoning, _ := body["reasoning"].(map[string]interface{})
-		if reasoning == nil {
-			reasoning = make(map[string]interface{})
+		model, _ := body["model"].(string)
+		if strings.TrimSpace(endpointModel) != "" {
+			model = endpointModel
 		}
-		reasoning["effort"] = effort
-		body["reasoning"] = reasoning
+		field, level := config.OpenAI2ThinkingField(apiURL, model, effort)
+		if level == "" {
+			return payload
+		}
+		delete(body, "reasoning")
+		delete(body, "reasoning_effort")
+		delete(body, "effortLevel")
+		if field == "effortLevel" {
+			body["effortLevel"] = level
+		} else {
+			body["reasoning"] = map[string]interface{}{"effort": level}
+		}
 	case strings.Contains(name, "openai"):
 		body["reasoning_effort"] = effort
 	default:

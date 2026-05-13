@@ -66,8 +66,8 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 	if got := rec.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
 		t.Fatalf("expected response endpoint header Fallback, got %q", got)
 	}
-	if got := p.GetCurrentEndpointName(); got != "Primary" {
-		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected global current endpoint to switch to Fallback, got %q", got)
 	}
 	if !hasRuntimeFailureEvent(runtimeEvents, "Primary", "rate_limited", http.StatusInternalServerError) {
 		t.Fatalf("expected Primary failure runtime event, got %#v", runtimeEvents)
@@ -80,8 +80,8 @@ func TestHTTPFailureFallbackIsRequestLocalAndDoesNotSwitchGlobalEndpoint(t *test
 	if !strings.Contains(logs, "failover_scope=request_local") {
 		t.Fatalf("expected request-local failover log, got logs:\n%s", logs)
 	}
-	if strings.Contains(logs, "[SWITCH]") {
-		t.Fatalf("expected no global switch log during request-local fallback, got logs:\n%s", logs)
+	if !strings.Contains(logs, "[AUTO SWITCH]") {
+		t.Fatalf("expected global auto switch log during request-local fallback, got logs:\n%s", logs)
 	}
 }
 
@@ -306,8 +306,8 @@ func TestConcurrentRequestLocalFallbackDoesNotAffectOtherRequest(t *testing.T) {
 	if !strings.Contains(logs, "request_id=req-a-concurrent") || !strings.Contains(logs, "failover_scope=request_local") {
 		t.Fatalf("expected req-a request-local failover log, got logs:\n%s", logs)
 	}
-	if strings.Contains(logs, "[SWITCH]") {
-		t.Fatalf("expected no global switch log during concurrent request-local fallback, got logs:\n%s", logs)
+	if strings.Contains(logs, "[AUTO SWITCH]") {
+		t.Fatalf("expected no global auto switch log during concurrent request-local fallback, got logs:\n%s", logs)
 	}
 }
 
@@ -353,13 +353,16 @@ func TestRequestLocalFallbackStreamingEndpointCanCompleteWhenNotGlobalCurrent(t 
 	if fallbackHits != 1 {
 		t.Fatalf("expected fallback stream endpoint to be hit once, got %d", fallbackHits)
 	}
-	if got := p.GetCurrentEndpointName(); got != "Primary" {
-		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected global current endpoint to switch to Fallback, got %q", got)
 	}
 	if !strings.Contains(rec.Body.String(), "response.completed") {
 		t.Fatalf("expected fallback stream body to reach client, got %q", rec.Body.String())
 	}
 	logs := joinedProxyLogs()
+	if !strings.Contains(logs, "[AUTO SWITCH]") {
+		t.Fatalf("expected global auto switch log during stream fallback, got logs:\n%s", logs)
+	}
 	if strings.Contains(logs, "Endpoint switched during streaming") {
 		t.Fatalf("did not expect request-local fallback stream to be terminated as switched, logs:\n%s", logs)
 	}
@@ -620,6 +623,9 @@ func TestStreamingUpstreamErrorCoolsEndpointForNextRequest(t *testing.T) {
 	streamReq.Header.Set(headerCCNexusRequestID, "req-stream-error-cooldown")
 	streamRec := httptest.NewRecorder()
 	p.handleProxy(streamRec, streamReq)
+	if body := streamRec.Body.String(); !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected streaming upstream error to return terminal Responses failure, got %q", body)
+	}
 
 	if primaryHits != 1 {
 		t.Fatalf("expected first streaming request to hit Primary once, got %d", primaryHits)
@@ -741,6 +747,132 @@ func TestStreamingUpstreamErrorDoesNotSwitchGlobalWhenFailedEndpointIsNotCurrent
 	}
 }
 
+func TestSpecifiedCurrentEndpointStreamingErrorDoesNotSwitchGlobal(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	var primaryHits int
+	var fallbackHits int
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "primary.example":
+			primaryHits++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:       failingReadCloser{err: errors.New("stream error: stream ID 101; INTERNAL_ERROR; received from peer")},
+				Request:    req,
+			}, nil
+		case "fallback.example":
+			fallbackHits++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)),
+				Request:    req,
+			}, nil
+		default:
+			t.Fatalf("unexpected upstream host %q", req.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", "https://primary.example"),
+		failoverPolicyTestEndpoint("Fallback", "https://fallback.example"),
+	}, client)
+	var currentEvents []EndpointCurrentEvent
+	p.SetOnCurrentEndpointChanged(func(event EndpointCurrentEvent) {
+		currentEvents = append(currentEvents, event)
+	})
+
+	streamReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[]}`))
+	streamReq.Header.Set("Content-Type", "application/json")
+	streamReq.Header.Set("X-CCN-Endpoint", "Primary")
+	streamReq.Header.Set(headerCCNexusRequestID, "req-specified-current-stream-error")
+	streamRec := httptest.NewRecorder()
+	p.handleProxy(streamRec, streamReq)
+
+	if primaryHits != 1 {
+		t.Fatalf("expected specified current endpoint request to hit Primary once, got %d", primaryHits)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("expected specified current endpoint request not to hit Fallback, got %d", fallbackHits)
+	}
+	if got := p.GetCurrentEndpointName(); got != "Primary" {
+		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
+	}
+	if len(currentEvents) != 0 {
+		t.Fatalf("expected no current endpoint events, got %#v", currentEvents)
+	}
+	if body := streamRec.Body.String(); !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("expected terminal Responses failure for specified stream error, got %q", body)
+	}
+	if logs := joinedProxyLogs(); strings.Contains(logs, "[AUTO SWITCH]") {
+		t.Fatalf("expected no auto switch log for specified current endpoint, got logs:\n%s", logs)
+	}
+}
+
+func TestAggregateStreamingFailureCoolsAndSwitchesCurrentEndpoint(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-fallback","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	defer fallback.Close()
+
+	primaryEndpoint := failoverPolicyTestEndpoint("Primary", primary.URL)
+	primaryEndpoint.ForceStream = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		primaryEndpoint,
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerCCNexusRequestID, "req-aggregate-failed-switch")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected fallback to succeed after aggregate failures, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if primaryHits != endpointFastFailoverAttempts {
+		t.Fatalf("expected primary aggregate failure to be tried %d times, got %d", endpointFastFailoverAttempts, primaryHits)
+	}
+	if fallbackHits != 1 {
+		t.Fatalf("expected fallback to be used once, got %d", fallbackHits)
+	}
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected aggregate streaming failure to switch current endpoint to Fallback, got %q", got)
+	}
+	p.cooldownMu.RLock()
+	cooldown, cooled := p.endpointCooldowns["Primary"]
+	p.cooldownMu.RUnlock()
+	if !cooled || cooldown.Reason != "aggregate_streaming_failed" {
+		t.Fatalf("expected Primary cooldown for aggregate_streaming_failed, got cooled=%v cooldown=%#v", cooled, cooldown)
+	}
+	if logs := joinedProxyLogs(); !strings.Contains(logs, "[AUTO SWITCH] Primary") ||
+		!strings.Contains(logs, "switch_reason=aggregate_streaming_failed") {
+		t.Fatalf("expected aggregate failure auto switch logs, got logs:\n%s", logs)
+	}
+}
+
 func TestTransientNetworkErrorRetriesOnceThenFailsOver(t *testing.T) {
 	logger.GetLogger().Clear()
 	logger.GetLogger().SetMinLevel(logger.DEBUG)
@@ -785,8 +917,8 @@ func TestTransientNetworkErrorRetriesOnceThenFailsOver(t *testing.T) {
 	if got := rec.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
 		t.Fatalf("expected final endpoint Fallback, got %q", got)
 	}
-	if got := p.GetCurrentEndpointName(); got != "Primary" {
-		t.Fatalf("expected global current endpoint to remain Primary, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected global current endpoint to switch to Fallback, got %q", got)
 	}
 
 	logs := joinedProxyLogs()
@@ -794,6 +926,7 @@ func TestTransientNetworkErrorRetriesOnceThenFailsOver(t *testing.T) {
 		"cooldown_reason=transient_network_error",
 		"failover_scope=request_local",
 		"failover_reason=transient_network_error",
+		"[AUTO SWITCH] Primary",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("expected logs to contain %q, got logs:\n%s", want, logs)

@@ -112,17 +112,23 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 // createEndpoint creates a new endpoint
 func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		APIUrl      string `json:"apiUrl"`
-		APIKey      string `json:"apiKey"`
-		AuthMode    string `json:"authMode"`
-		Enabled     bool   `json:"enabled"`
-		Transformer string `json:"transformer"`
-		Model       string `json:"model"`
-		Thinking    string `json:"thinking"`
-		ForceStream *bool  `json:"forceStream"`
-		Remark      string `json:"remark"`
-		CloneFrom   string `json:"cloneFrom"` // Clone from existing endpoint name
+		Name                    string `json:"name"`
+		APIUrl                  string `json:"apiUrl"`
+		APIKey                  string `json:"apiKey"`
+		AuthMode                string `json:"authMode"`
+		Enabled                 bool   `json:"enabled"`
+		Transformer             string `json:"transformer"`
+		Model                   string `json:"model"`
+		Thinking                string `json:"thinking"`
+		ForceStream             *bool  `json:"forceStream"`
+		AutoSelect              *bool  `json:"autoSelect"`
+		SupportsOpenAIResponses *bool  `json:"supportsOpenAIResponses"`
+		SupportsOpenAIChat      *bool  `json:"supportsOpenAIChat"`
+		SupportsClaudeMessages  *bool  `json:"supportsClaudeMessages"`
+		PreferredClaudeUpstream string `json:"preferredClaudeUpstream"`
+		PreferredOpenAIUpstream string `json:"preferredOpenAIUpstream"`
+		Remark                  string `json:"remark"`
+		CloneFrom               string `json:"cloneFrom"` // Clone from existing endpoint name
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -144,6 +150,28 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 						forceStream := ep.ForceStream
 						req.ForceStream = &forceStream
 					}
+					if req.AutoSelect == nil {
+						autoSelect := ep.AutoSelect
+						req.AutoSelect = &autoSelect
+					}
+					if req.SupportsOpenAIResponses == nil {
+						supportsOpenAIResponses := ep.SupportsOpenAIResponses
+						req.SupportsOpenAIResponses = &supportsOpenAIResponses
+					}
+					if req.SupportsOpenAIChat == nil {
+						supportsOpenAIChat := ep.SupportsOpenAIChat
+						req.SupportsOpenAIChat = &supportsOpenAIChat
+					}
+					if req.SupportsClaudeMessages == nil {
+						supportsClaudeMessages := ep.SupportsClaudeMessages
+						req.SupportsClaudeMessages = &supportsClaudeMessages
+					}
+					if req.PreferredClaudeUpstream == "" {
+						req.PreferredClaudeUpstream = ep.PreferredClaudeUpstream
+					}
+					if req.PreferredOpenAIUpstream == "" {
+						req.PreferredOpenAIUpstream = ep.PreferredOpenAIUpstream
+					}
 					break
 				}
 			}
@@ -155,15 +183,25 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	if req.ForceStream != nil {
 		forceStream = *req.ForceStream
 	}
+	autoSelect := boolFromPtr(req.AutoSelect)
+	supportsOpenAIResponses := boolFromPtr(req.SupportsOpenAIResponses)
+	supportsOpenAIChat := boolFromPtr(req.SupportsOpenAIChat)
+	supportsClaudeMessages := boolFromPtr(req.SupportsClaudeMessages)
 	normalizedEndpoint := config.Endpoint{
-		APIUrl:      normalizeAPIUrl(req.APIUrl),
-		APIKey:      req.APIKey,
-		AuthMode:    authMode,
-		Transformer: req.Transformer,
-		Model:       req.Model,
-		Thinking:    req.Thinking,
-		ForceStream: forceStream,
-		Remark:      req.Remark,
+		APIUrl:                  normalizeAPIUrl(req.APIUrl),
+		APIKey:                  req.APIKey,
+		AuthMode:                authMode,
+		Transformer:             req.Transformer,
+		Model:                   req.Model,
+		Thinking:                req.Thinking,
+		ForceStream:             forceStream,
+		AutoSelect:              autoSelect,
+		SupportsOpenAIResponses: supportsOpenAIResponses,
+		SupportsOpenAIChat:      supportsOpenAIChat,
+		SupportsClaudeMessages:  supportsClaudeMessages,
+		PreferredClaudeUpstream: req.PreferredClaudeUpstream,
+		PreferredOpenAIUpstream: req.PreferredOpenAIUpstream,
+		Remark:                  req.Remark,
 	}
 	if normalizedEndpoint.Transformer == "" {
 		normalizedEndpoint.Transformer = "claude"
@@ -176,6 +214,12 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	req.Transformer = normalizedEndpoint.Transformer
 	req.Thinking = normalizedEndpoint.Thinking
 	forceStream = normalizedEndpoint.ForceStream
+	autoSelect = normalizedEndpoint.AutoSelect
+	supportsOpenAIResponses = normalizedEndpoint.SupportsOpenAIResponses
+	supportsOpenAIChat = normalizedEndpoint.SupportsOpenAIChat
+	supportsClaudeMessages = normalizedEndpoint.SupportsClaudeMessages
+	req.PreferredClaudeUpstream = normalizedEndpoint.PreferredClaudeUpstream
+	req.PreferredOpenAIUpstream = normalizedEndpoint.PreferredOpenAIUpstream
 
 	// Validate required fields
 	if req.Name == "" || req.APIUrl == "" {
@@ -208,19 +252,25 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	// Create new endpoint
 	endpoint := &storage.Endpoint{
-		Name:        req.Name,
-		APIUrl:      normalizeAPIUrl(req.APIUrl),
-		APIKey:      req.APIKey,
-		AuthMode:    authMode,
-		Enabled:     req.Enabled,
-		Transformer: req.Transformer,
-		Model:       req.Model,
-		Thinking:    req.Thinking,
-		ForceStream: forceStream,
-		Remark:      req.Remark,
-		SortOrder:   len(endpoints),
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		Name:                    req.Name,
+		APIUrl:                  normalizeAPIUrl(req.APIUrl),
+		APIKey:                  req.APIKey,
+		AuthMode:                authMode,
+		Enabled:                 req.Enabled,
+		Transformer:             req.Transformer,
+		Model:                   req.Model,
+		Thinking:                req.Thinking,
+		ForceStream:             forceStream,
+		AutoSelect:              autoSelect,
+		SupportsOpenAIResponses: supportsOpenAIResponses,
+		SupportsOpenAIChat:      supportsOpenAIChat,
+		SupportsClaudeMessages:  supportsClaudeMessages,
+		PreferredClaudeUpstream: req.PreferredClaudeUpstream,
+		PreferredOpenAIUpstream: req.PreferredOpenAIUpstream,
+		Remark:                  req.Remark,
+		SortOrder:               len(endpoints),
+		CreatedAt:               time.Now(),
+		UpdatedAt:               time.Now(),
 	}
 
 	if err := h.storage.SaveEndpoint(endpoint); err != nil {
@@ -241,16 +291,22 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 // updateEndpoint updates an existing endpoint
 func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name string) {
 	var req struct {
-		Name        string `json:"name"`
-		APIUrl      string `json:"apiUrl"`
-		APIKey      string `json:"apiKey"`
-		AuthMode    string `json:"authMode"`
-		Enabled     bool   `json:"enabled"`
-		Transformer string `json:"transformer"`
-		Model       string `json:"model"`
-		Thinking    string `json:"thinking"`
-		ForceStream *bool  `json:"forceStream"`
-		Remark      string `json:"remark"`
+		Name                    string `json:"name"`
+		APIUrl                  string `json:"apiUrl"`
+		APIKey                  string `json:"apiKey"`
+		AuthMode                string `json:"authMode"`
+		Enabled                 bool   `json:"enabled"`
+		Transformer             string `json:"transformer"`
+		Model                   string `json:"model"`
+		Thinking                string `json:"thinking"`
+		ForceStream             *bool  `json:"forceStream"`
+		AutoSelect              *bool  `json:"autoSelect"`
+		SupportsOpenAIResponses *bool  `json:"supportsOpenAIResponses"`
+		SupportsOpenAIChat      *bool  `json:"supportsOpenAIChat"`
+		SupportsClaudeMessages  *bool  `json:"supportsClaudeMessages"`
+		PreferredClaudeUpstream string `json:"preferredClaudeUpstream"`
+		PreferredOpenAIUpstream string `json:"preferredOpenAIUpstream"`
+		Remark                  string `json:"remark"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -267,9 +323,11 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	}
 
 	var existing *storage.Endpoint
+	existingIndex := -1
 	for i := range endpoints {
 		if endpoints[i].Name == name {
 			existing = &endpoints[i]
+			existingIndex = i
 			break
 		}
 	}
@@ -280,8 +338,11 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	}
 
 	// Update fields
-	if req.Name != "" {
-		existing.Name = req.Name
+	if strings.TrimSpace(req.Name) != "" {
+		existing.Name = strings.TrimSpace(req.Name)
+	} else if req.Name != "" {
+		WriteError(w, http.StatusBadRequest, "Name is required")
+		return
 	}
 	if req.APIUrl != "" {
 		existing.APIUrl = normalizeAPIUrl(req.APIUrl)
@@ -296,19 +357,43 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 		existing.AuthMode = config.AuthModeAPIKey
 	}
 	normalizedEndpoint := config.Endpoint{
-		Name:        existing.Name,
-		APIUrl:      existing.APIUrl,
-		APIKey:      existing.APIKey,
-		AuthMode:    existing.AuthMode,
-		Enabled:     existing.Enabled,
-		Transformer: existing.Transformer,
-		Model:       existing.Model,
-		Thinking:    existing.Thinking,
-		ForceStream: existing.ForceStream,
-		Remark:      existing.Remark,
+		Name:                    existing.Name,
+		APIUrl:                  existing.APIUrl,
+		APIKey:                  existing.APIKey,
+		AuthMode:                existing.AuthMode,
+		Enabled:                 existing.Enabled,
+		Transformer:             existing.Transformer,
+		Model:                   existing.Model,
+		Thinking:                existing.Thinking,
+		ForceStream:             existing.ForceStream,
+		AutoSelect:              existing.AutoSelect,
+		SupportsOpenAIResponses: existing.SupportsOpenAIResponses,
+		SupportsOpenAIChat:      existing.SupportsOpenAIChat,
+		SupportsClaudeMessages:  existing.SupportsClaudeMessages,
+		PreferredClaudeUpstream: existing.PreferredClaudeUpstream,
+		PreferredOpenAIUpstream: existing.PreferredOpenAIUpstream,
+		Remark:                  existing.Remark,
 	}
 	if req.ForceStream != nil {
 		normalizedEndpoint.ForceStream = *req.ForceStream
+	}
+	if req.AutoSelect != nil {
+		normalizedEndpoint.AutoSelect = *req.AutoSelect
+	}
+	if req.SupportsOpenAIResponses != nil {
+		normalizedEndpoint.SupportsOpenAIResponses = *req.SupportsOpenAIResponses
+	}
+	if req.SupportsOpenAIChat != nil {
+		normalizedEndpoint.SupportsOpenAIChat = *req.SupportsOpenAIChat
+	}
+	if req.SupportsClaudeMessages != nil {
+		normalizedEndpoint.SupportsClaudeMessages = *req.SupportsClaudeMessages
+	}
+	if req.PreferredClaudeUpstream != "" {
+		normalizedEndpoint.PreferredClaudeUpstream = req.PreferredClaudeUpstream
+	}
+	if req.PreferredOpenAIUpstream != "" {
+		normalizedEndpoint.PreferredOpenAIUpstream = req.PreferredOpenAIUpstream
 	}
 	if normalizedEndpoint.Transformer == "" {
 		normalizedEndpoint.Transformer = "claude"
@@ -323,6 +408,12 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	existing.Transformer = normalizedEndpoint.Transformer
 	existing.Thinking = normalizedEndpoint.Thinking
 	existing.ForceStream = normalizedEndpoint.ForceStream
+	existing.AutoSelect = normalizedEndpoint.AutoSelect
+	existing.SupportsOpenAIResponses = normalizedEndpoint.SupportsOpenAIResponses
+	existing.SupportsOpenAIChat = normalizedEndpoint.SupportsOpenAIChat
+	existing.SupportsClaudeMessages = normalizedEndpoint.SupportsClaudeMessages
+	existing.PreferredClaudeUpstream = normalizedEndpoint.PreferredClaudeUpstream
+	existing.PreferredOpenAIUpstream = normalizedEndpoint.PreferredOpenAIUpstream
 	if existing.AuthMode == config.AuthModeAPIKey && existing.APIKey == "" {
 		WriteError(w, http.StatusBadRequest, "apiKey is required in api_key mode")
 		return
@@ -341,7 +432,16 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 	existing.Remark = req.Remark
 	existing.UpdatedAt = time.Now()
 
-	if err := h.storage.UpdateEndpoint(existing); err != nil {
+	if existing.Name != name {
+		for i, ep := range endpoints {
+			if i != existingIndex && ep.Name == existing.Name {
+				WriteError(w, http.StatusConflict, "Endpoint with this name already exists")
+				return
+			}
+		}
+	}
+
+	if err := h.storage.UpdateEndpointByName(name, existing); err != nil {
 		logger.Error("Failed to update endpoint: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to update endpoint")
 		return
@@ -464,18 +564,18 @@ func (h *Handler) handleSwitchEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify endpoint exists
-	endpoints := h.config.GetEndpoints()
-	found := false
-	for _, ep := range endpoints {
-		if ep.Name == req.Name && ep.Enabled {
-			found = true
-			break
-		}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		WriteError(w, http.StatusBadRequest, "Endpoint name required")
+		return
 	}
 
-	if !found {
-		WriteError(w, http.StatusNotFound, "Endpoint not found or not enabled")
+	if err := h.proxy.SetCurrentEndpoint(req.Name); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "not enabled") || strings.Contains(err.Error(), "no enabled endpoints") {
+			status = http.StatusNotFound
+		}
+		WriteError(w, status, err.Error())
 		return
 	}
 
@@ -562,4 +662,11 @@ func maskAPIKey(key string) string {
 // normalizeAPIUrl ensures the API URL has the correct format
 func normalizeAPIUrl(apiUrl string) string {
 	return strings.TrimSuffix(apiUrl, "/")
+}
+
+func boolFromPtr(value *bool) bool {
+	if value == nil {
+		return false
+	}
+	return *value
 }

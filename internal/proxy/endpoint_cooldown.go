@@ -101,7 +101,13 @@ func endpointCooldownIdentityChanged(oldEndpoint config.Endpoint, newEndpoint co
 		strings.TrimSpace(strings.ToLower(oldEndpoint.Transformer)) != strings.TrimSpace(strings.ToLower(newEndpoint.Transformer)) ||
 		strings.TrimSpace(oldEndpoint.Model) != strings.TrimSpace(newEndpoint.Model) ||
 		strings.TrimSpace(oldEndpoint.Thinking) != strings.TrimSpace(newEndpoint.Thinking) ||
-		oldEndpoint.ForceStream != newEndpoint.ForceStream
+		oldEndpoint.ForceStream != newEndpoint.ForceStream ||
+		oldEndpoint.AutoSelect != newEndpoint.AutoSelect ||
+		oldEndpoint.SupportsOpenAIResponses != newEndpoint.SupportsOpenAIResponses ||
+		oldEndpoint.SupportsOpenAIChat != newEndpoint.SupportsOpenAIChat ||
+		oldEndpoint.SupportsClaudeMessages != newEndpoint.SupportsClaudeMessages ||
+		config.NormalizeEndpointUpstreamPreference(oldEndpoint.PreferredClaudeUpstream) != config.NormalizeEndpointUpstreamPreference(newEndpoint.PreferredClaudeUpstream) ||
+		config.NormalizeEndpointUpstreamPreference(oldEndpoint.PreferredOpenAIUpstream) != config.NormalizeEndpointUpstreamPreference(newEndpoint.PreferredOpenAIUpstream)
 }
 
 func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs requestObservability) []config.Endpoint {
@@ -172,12 +178,14 @@ func (p *Proxy) isEndpointDeprioritized(endpointName string) bool {
 	return ok && !cooldown.Until.After(time.Now())
 }
 
-func (p *Proxy) markEndpointCooldownForReason(endpointName string, reason string, headers http.Header, obs requestObservability, attemptNumber int) {
+func (p *Proxy) markEndpointCooldownForReason(endpointName string, reason string, headers http.Header, obs requestObservability, attemptNumber int) bool {
 	duration := p.cooldownDurationForReason(reason, headers)
 	if duration <= 0 {
-		return
+		return false
 	}
 	p.markEndpointCooldown(endpointName, reason, duration, obs, attemptNumber)
+	p.registerForHealthCheck(endpointName)
+	return true
 }
 
 func (p *Proxy) cooldownDurationForReason(reason string, headers http.Header) time.Duration {
@@ -198,7 +206,7 @@ func (p *Proxy) cooldownDurationForReason(reason string, headers http.Header) ti
 			return retryAfter
 		}
 		return secondsToDuration(cooldowns.RateLimitedSec)
-	case "upstream_5xx", "retryable_status", "upstream_stream_error", "streaming_failed", retryReasonSemanticEmptyResponse:
+	case "upstream_5xx", "retryable_status", "upstream_stream_error", "streaming_failed", "aggregate_streaming_failed", retryReasonSemanticEmptyResponse:
 		return secondsToDuration(cooldowns.UpstreamErrorSec)
 	case "send_request_failed", "transient_network_error", retryReasonTransportProtocol:
 		return secondsToDuration(cooldowns.NetworkErrorSec)

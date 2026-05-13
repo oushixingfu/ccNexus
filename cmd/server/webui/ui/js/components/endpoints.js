@@ -133,7 +133,7 @@ class Endpoints {
                         📋
                     </button>
                 </td>
-                <td>${getTransformerLabel(ep.transformer)}</td>
+                <td>${getTransformerLabel(ep.transformer)}${ep.autoSelect ? ` <span class="badge badge-primary">${t('endpoints.autoSelectShort')}</span>` : ''}</td>
                 <td>${this.escapeHtml(ep.model || '-')}</td>
                 <td>${this.renderTokenPoolSummary(this.tokenPools[ep.name])}</td>
                 <td>${getStatusBadge(ep.enabled)}</td>
@@ -341,6 +341,12 @@ class Endpoints {
         const cloneHiddenInput = isClone ? '<input type="hidden" name="isClone" value="true">' : '';
         const cloneFromValue = endpoint?.cloneFrom || '';
         const cloneFromInput = isClone && cloneFromValue ? `<input type="hidden" name="cloneFrom" value="${cloneFromValue}">` : '';
+        const transformer = endpoint?.transformer || 'claude';
+        const preferredClaudeUpstream = endpoint?.preferredClaudeUpstream || 'auto';
+        const preferredOpenAIUpstream = endpoint?.preferredOpenAIUpstream || 'auto';
+        const supportsOpenAIResponses = endpoint ? !!endpoint.supportsOpenAIResponses : transformer === 'openai2';
+        const supportsOpenAIChat = endpoint ? !!endpoint.supportsOpenAIChat : ['openai', 'deepseek', 'kimi'].includes(transformer);
+        const supportsClaudeMessages = endpoint ? !!endpoint.supportsClaudeMessages : transformer === 'claude';
 
         modalContainer.innerHTML = `
             <div class="modal-overlay">
@@ -355,7 +361,7 @@ class Endpoints {
                             ${cloneFromInput}
                             <div class="form-group">
                                 <label class="form-label">${t('common.name')} *</label>
-                                <input type="text" class="form-input" name="name" value="${endpoint ? this.escapeHtml(endpoint.name) : ''}" required ${isEdit ? 'readonly' : ''}>
+                                <input type="text" class="form-input" name="name" value="${endpoint ? this.escapeHtml(endpoint.name) : ''}" required>
                             </div>
                             <div class="form-group">
                                 <label class="form-label">${t('endpoints.apiUrl')} *</label>
@@ -369,16 +375,57 @@ class Endpoints {
                             <div class="form-group">
                                 <label class="form-label">${t('endpoints.transformer')} *</label>
                                 <select class="form-select" name="transformer" required>
-                                    <option value="claude" ${endpoint?.transformer === 'claude' ? 'selected' : ''}>${t('transformers.claude')}</option>
-                                    <option value="openai" ${endpoint?.transformer === 'openai' ? 'selected' : ''}>${t('transformers.openai')}</option>
-                                    <option value="openai2" ${endpoint?.transformer === 'openai2' ? 'selected' : ''}>${t('transformers.openai2')}</option>
-                                    <option value="gemini" ${endpoint?.transformer === 'gemini' ? 'selected' : ''}>${t('transformers.gemini')}</option>
-                                    <option value="deepseek" ${endpoint?.transformer === 'deepseek' ? 'selected' : ''}>${t('transformers.deepseek')}</option>
-                                    <option value="kimi" ${endpoint?.transformer === 'kimi' ? 'selected' : ''}>${t('transformers.kimi')}</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">${t('endpoints.model')}</label>
+                                    <option value="claude" ${transformer === 'claude' ? 'selected' : ''}>${t('transformers.claude')}</option>
+                                    <option value="openai" ${transformer === 'openai' ? 'selected' : ''}>${t('transformers.openai')}</option>
+                                    <option value="openai2" ${transformer === 'openai2' ? 'selected' : ''}>${t('transformers.openai2')}</option>
+                                    <option value="gemini" ${transformer === 'gemini' ? 'selected' : ''}>${t('transformers.gemini')}</option>
+                                    <option value="deepseek" ${transformer === 'deepseek' ? 'selected' : ''}>${t('transformers.deepseek')}</option>
+                                    <option value="kimi" ${transformer === 'kimi' ? 'selected' : ''}>${t('transformers.kimi')}</option>
+	                                </select>
+	                            </div>
+	                            <div class="form-group">
+	                                <label>
+	                                    <input type="checkbox" class="form-checkbox" name="autoSelect" ${endpoint?.autoSelect ? 'checked' : ''}>
+	                                    ${t('endpoints.autoSelect')}
+	                                </label>
+	                                <small class="text-muted">${t('endpoints.autoSelectHint')}</small>
+	                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-top: 8px;">
+	                                    <label>
+	                                        <input type="checkbox" class="form-checkbox" name="supportsOpenAIResponses" ${supportsOpenAIResponses ? 'checked' : ''}>
+	                                        ${t('endpoints.supportsOpenAIResponses')}
+	                                    </label>
+	                                    <label>
+	                                        <input type="checkbox" class="form-checkbox" name="supportsOpenAIChat" ${supportsOpenAIChat ? 'checked' : ''}>
+	                                        ${t('endpoints.supportsOpenAIChat')}
+	                                    </label>
+	                                    <label>
+	                                        <input type="checkbox" class="form-checkbox" name="supportsClaudeMessages" ${supportsClaudeMessages ? 'checked' : ''}>
+	                                        ${t('endpoints.supportsClaudeMessages')}
+	                                    </label>
+	                                </div>
+	                            </div>
+	                            <div class="form-group" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;">
+	                                <div>
+	                                    <label class="form-label">${t('endpoints.preferredClaudeUpstream')}</label>
+	                                    <select class="form-select" name="preferredClaudeUpstream">
+	                                        <option value="auto" ${preferredClaudeUpstream === 'auto' ? 'selected' : ''}>${t('endpoints.upstreamAuto')}</option>
+	                                        <option value="claude" ${preferredClaudeUpstream === 'claude' ? 'selected' : ''}>Claude</option>
+	                                        <option value="openai2" ${preferredClaudeUpstream === 'openai2' ? 'selected' : ''}>OpenAI Responses</option>
+	                                        <option value="openai" ${preferredClaudeUpstream === 'openai' ? 'selected' : ''}>OpenAI Chat</option>
+	                                    </select>
+	                                </div>
+	                                <div>
+	                                    <label class="form-label">${t('endpoints.preferredOpenAIUpstream')}</label>
+	                                    <select class="form-select" name="preferredOpenAIUpstream">
+	                                        <option value="auto" ${preferredOpenAIUpstream === 'auto' ? 'selected' : ''}>${t('endpoints.upstreamAuto')}</option>
+	                                        <option value="openai2" ${preferredOpenAIUpstream === 'openai2' ? 'selected' : ''}>OpenAI Responses</option>
+	                                        <option value="openai" ${preferredOpenAIUpstream === 'openai' ? 'selected' : ''}>OpenAI Chat</option>
+	                                        <option value="claude" ${preferredOpenAIUpstream === 'claude' ? 'selected' : ''}>Claude</option>
+	                                    </select>
+	                                </div>
+	                            </div>
+	                            <div class="form-group">
+	                                <label class="form-label">${t('endpoints.model')}</label>
                                 <div style="display: flex; gap: 8px;">
                                     <input type="text" class="form-input" name="model" id="model-input" value="${endpoint ? this.escapeHtml(endpoint.model || '') : ''}" placeholder="${t('endpoints.modelPlaceholder')}" style="flex: 1;">
                                     <button type="button" class="btn btn-secondary" id="fetch-models-btn" style="white-space: nowrap;">
@@ -525,12 +572,18 @@ class Endpoints {
             name: formData.get('name'),
             apiUrl: formData.get('apiUrl'),
             apiKey: formData.get('apiKey'),
-            transformer: formData.get('transformer'),
-            model: formData.get('model'),
-            forceStream: formData.get('forceStream') === 'on',
-            remark: formData.get('remark'),
-            enabled: formData.get('enabled') === 'on'
-        };
+	            transformer: formData.get('transformer'),
+	            model: formData.get('model'),
+	            forceStream: formData.get('forceStream') === 'on',
+	            autoSelect: formData.get('autoSelect') === 'on',
+	            supportsOpenAIResponses: formData.get('supportsOpenAIResponses') === 'on',
+	            supportsOpenAIChat: formData.get('supportsOpenAIChat') === 'on',
+	            supportsClaudeMessages: formData.get('supportsClaudeMessages') === 'on',
+	            preferredClaudeUpstream: formData.get('preferredClaudeUpstream') || 'auto',
+	            preferredOpenAIUpstream: formData.get('preferredOpenAIUpstream') || 'auto',
+	            remark: formData.get('remark'),
+	            enabled: formData.get('enabled') === 'on'
+	        };
 
         // If editing and API key is ****, don't send it (keep existing)
         if ((isEdit || isClone) && data.apiKey === '****') {
@@ -660,11 +713,17 @@ class Endpoints {
             name: newName,
             apiUrl: endpoint.apiUrl,
             transformer: endpoint.transformer,
-            model: endpoint.model,
-            thinking: endpoint.thinking,
-            forceStream: !!endpoint.forceStream,
-            remark: endpoint.remark,
-            enabled: endpoint.enabled,
+	            model: endpoint.model,
+	            thinking: endpoint.thinking,
+	            forceStream: !!endpoint.forceStream,
+	            autoSelect: !!endpoint.autoSelect,
+	            supportsOpenAIResponses: !!endpoint.supportsOpenAIResponses,
+	            supportsOpenAIChat: !!endpoint.supportsOpenAIChat,
+	            supportsClaudeMessages: !!endpoint.supportsClaudeMessages,
+	            preferredClaudeUpstream: endpoint.preferredClaudeUpstream || 'auto',
+	            preferredOpenAIUpstream: endpoint.preferredOpenAIUpstream || 'auto',
+	            remark: endpoint.remark,
+	            enabled: endpoint.enabled,
             cloneFrom: name  // Reference to source endpoint
         };
 

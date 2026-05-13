@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
@@ -80,6 +81,134 @@ func TestGetTargetPathUsesV1ForCustomDeepSeekGateway(t *testing.T) {
 	got := getTargetPath("/v1/responses", ep, []byte(`{}`), "cx_resp_openai")
 	if got != "/v1/chat/completions" {
 		t.Fatalf("expected /v1/chat/completions, got %s", got)
+	}
+}
+
+func TestGetTargetPathPreservesResponsesCompactForOpenAI2(t *testing.T) {
+	ep := config.Endpoint{Transformer: "openai2", APIUrl: "https://gateway.example.com/v1"}
+	got := getTargetPath("/v1/responses/compact", ep, []byte(`{}`), "cx_resp_openai2")
+	if got != "/v1/responses/compact" {
+		t.Fatalf("expected /v1/responses/compact, got %s", got)
+	}
+}
+
+func TestEndpointForClientFormatAutoSelectsRequestLocalUpstreams(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:                    "multi",
+		Transformer:             "openai2",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsClaudeMessages:  true,
+		PreferredClaudeUpstream: "claude",
+		Model:                   "gpt-5.5",
+	}
+
+	claudeUpstream := endpointForClientFormat(ClientFormatClaude, endpoint)
+	responsesUpstream := endpointForClientFormat(ClientFormatOpenAIResponses, endpoint)
+
+	if claudeUpstream.Transformer != "claude" {
+		t.Fatalf("expected Claude client to use claude upstream, got %s", claudeUpstream.Transformer)
+	}
+	if responsesUpstream.Transformer != "openai2" {
+		t.Fatalf("expected Responses client to use openai2 upstream, got %s", responsesUpstream.Transformer)
+	}
+	if endpoint.Transformer != "openai2" {
+		t.Fatalf("auto selection must not mutate original endpoint, got %s", endpoint.Transformer)
+	}
+}
+
+func TestEndpointForClientFormatInfersNativeOpenAI2Capability(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:        "responses-only",
+		Transformer: "openai2",
+		AutoSelect:  true,
+		Model:       "gpt-5.5",
+	}
+
+	claudeUpstream := endpointForClientFormat(ClientFormatClaude, endpoint)
+	if claudeUpstream.Transformer != "openai2" {
+		t.Fatalf("expected Claude client to use inferred openai2 upstream, got %s", claudeUpstream.Transformer)
+	}
+}
+
+func TestEndpointForClientFormatPrefersNativeOpenAI2ForClaudeWithoutPreference(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:                    "responses-first",
+		Transformer:             "openai2",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsClaudeMessages:  true,
+		Model:                   "gpt-5.5",
+	}
+
+	claudeUpstream := endpointForClientFormat(ClientFormatClaude, endpoint)
+	if claudeUpstream.Transformer != "openai2" {
+		t.Fatalf("expected Claude client to use native openai2 upstream, got %s", claudeUpstream.Transformer)
+	}
+}
+
+func TestHandleProxyAutoSelectOneEndpointServesClaudeAndResponsesConcurrently(t *testing.T) {
+	paths := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/messages":
+			_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"claude ok"}],"usage":{"input_tokens":2,"output_tokens":2}}`))
+		case "/v1/responses":
+			_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"responses ok"}]}],"usage":{"input_tokens":2,"output_tokens":2,"total_tokens":4}}`))
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("multi", upstream.URL)
+	endpoint.AutoSelect = true
+	endpoint.SupportsOpenAIResponses = true
+	endpoint.SupportsClaudeMessages = true
+	endpoint.PreferredClaudeUpstream = "claude"
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make(chan string, 2)
+
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5-20250929","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		p.handleProxy(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "claude ok") {
+			errs <- "claude request failed: status=" + http.StatusText(rec.Code) + " body=" + rec.Body.String()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		p.handleProxy(rec, req)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "responses ok") {
+			errs <- "responses request failed: status=" + http.StatusText(rec.Code) + " body=" + rec.Body.String()
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+	for errMsg := range errs {
+		t.Fatal(errMsg)
+	}
+	close(paths)
+
+	seen := map[string]bool{}
+	for p := range paths {
+		seen[p] = true
+	}
+	if !seen["/v1/messages"] || !seen["/v1/responses"] {
+		t.Fatalf("expected one endpoint to serve both upstream paths, got %#v", seen)
 	}
 }
 
@@ -382,9 +511,25 @@ func TestForceStreamInPayloadAddsChatUsageOptions(t *testing.T) {
 	}
 }
 
-func TestInjectEndpointThinkingInPayloadAddsResponsesReasoning(t *testing.T) {
+func TestInjectEndpointThinkingInPayloadAddsResponsesEffortLevel(t *testing.T) {
 	raw := []byte(`{"model":"gpt-5.5","stream":true,"input":[]}`)
-	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "High")
+	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "xhigh", "https://1052.cc.cd:5005", "gpt-5.5")
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if payload["effortLevel"] != "xhigh" {
+		t.Fatalf("expected effortLevel=xhigh, got %#v", payload["effortLevel"])
+	}
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("did not expect reasoning object, got %#v", payload["reasoning"])
+	}
+}
+
+func TestInjectEndpointThinkingInPayloadKeepsOfficialOpenAIReasoning(t *testing.T) {
+	raw := []byte(`{"model":"gpt-5.5","stream":true,"input":[]}`)
+	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "High", "https://api.openai.com/v1", "gpt-5.5")
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(out, &payload); err != nil {
@@ -397,11 +542,14 @@ func TestInjectEndpointThinkingInPayloadAddsResponsesReasoning(t *testing.T) {
 	if reasoning["effort"] != "high" {
 		t.Fatalf("expected reasoning.effort=high, got %#v", reasoning["effort"])
 	}
+	if _, ok := payload["effortLevel"]; ok {
+		t.Fatalf("did not expect effortLevel for official OpenAI, got %#v", payload["effortLevel"])
+	}
 }
 
 func TestInjectEndpointThinkingInPayloadAddsChatReasoningEffort(t *testing.T) {
 	raw := []byte(`{"model":"gpt-5.5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
-	out := injectEndpointThinkingInPayload(raw, "cx_chat_openai", "xhigh")
+	out := injectEndpointThinkingInPayload(raw, "cx_chat_openai", "xhigh", "", "")
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(out, &payload); err != nil {
@@ -417,14 +565,14 @@ func TestInjectEndpointThinkingInPayloadAddsChatReasoningEffort(t *testing.T) {
 
 func TestInjectEndpointThinkingInPayloadSkipsOff(t *testing.T) {
 	raw := []byte(`{"model":"gpt-5.5","stream":true,"input":[]}`)
-	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "off")
+	out := injectEndpointThinkingInPayload(raw, "cx_resp_openai2", "off", "", "")
 
 	var payload map[string]interface{}
 	if err := json.Unmarshal(out, &payload); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if _, ok := payload["reasoning"]; ok {
-		t.Fatalf("did not expect reasoning when thinking is off, got %#v", payload["reasoning"])
+	if _, ok := payload["effortLevel"]; ok {
+		t.Fatalf("did not expect effortLevel when thinking is off, got %#v", payload["effortLevel"])
 	}
 }
 
@@ -442,5 +590,20 @@ func TestShouldHandleAsStreamingResponseForCodexWithoutContentType(t *testing.T)
 	}
 	if !shouldHandleAsStreamingResponse("text/event-stream", false, endpoint, "cx_chat_openai2") {
 		t.Fatal("expected text/event-stream content-type to be treated as streaming")
+	}
+}
+
+func TestShouldHandleAsStreamingResponseForForcedOpenAIStreamWithoutContentType(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:        "Forced",
+		APIUrl:      "https://gateway.example.com",
+		Transformer: "openai2",
+		ForceStream: true,
+	}
+	if !shouldHandleAsStreamingResponse("", true, endpoint, "cx_resp_openai2") {
+		t.Fatal("expected forced OpenAI stream with empty content-type to be treated as streaming")
+	}
+	if shouldHandleAsStreamingResponse("", false, endpoint, "cx_resp_openai2") {
+		t.Fatal("expected non-stream client request to not be treated as streaming when content-type is empty")
 	}
 }

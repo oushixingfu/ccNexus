@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -15,6 +16,7 @@ const (
 	emptyKindResponsesEmpty = "responses_empty"
 	emptyKindChatEmpty      = "chat_empty"
 	emptyKindClaudeEmpty    = "claude_empty"
+	emptyKindGeminiEmpty    = "gemini_empty"
 	emptyKindReasoningOnly  = "reasoning_only"
 )
 
@@ -50,6 +52,24 @@ func asSemanticEmptyResponseError(err error) (*semanticEmptyResponseError, bool)
 	return nil, false
 }
 
+func writeSemanticEmptyFailure(w http.ResponseWriter, streamSession *downstreamStreamSession, clientFormat ClientFormat, transformerName string, err *semanticEmptyResponseError) {
+	if err == nil {
+		err = newSemanticEmptyResponseError("", 0, 0)
+	}
+	if streamSession != nil && streamSession.Started() {
+		_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, retryReasonSemanticEmptyResponse, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]interface{}{
+			"type":    retryReasonSemanticEmptyResponse,
+			"message": err.Error(),
+		},
+	})
+}
+
 type semanticResponseInspection struct {
 	Recognized    bool
 	HasOutput     bool
@@ -83,6 +103,9 @@ func inspectSemanticResponse(body []byte) semanticResponseInspection {
 	if hasClaudeShape(payload) {
 		return inspectClaudePayload(payload)
 	}
+	if hasGeminiShape(payload) {
+		return inspectGeminiPayload(payload)
+	}
 
 	return semanticResponseInspection{}
 }
@@ -95,11 +118,51 @@ func semanticEmptyErrorForResponse(body []byte, outputTokens int) *semanticEmpty
 	return newSemanticEmptyResponseError(inspection.EmptyKind, outputTokens, inspection.OutputTextLen)
 }
 
+// ValidateSemanticResponseHasOutput verifies that a successful upstream test or
+// health-check response contains usable semantic output, not just HTTP 2xx.
+func ValidateSemanticResponseHasOutput(body []byte, contentType string) error {
+	if looksLikeSemanticEventStream(contentType, body) {
+		inspection := inspectSemanticStreamEvent(body)
+		if inspection.HasOutput {
+			return nil
+		}
+		if inspection.EmptyKind == "" {
+			inspection.EmptyKind = emptyKindResponsesEmpty
+		}
+		return newSemanticEmptyResponseError(inspection.EmptyKind, 0, 0)
+	}
+
+	inspection := inspectSemanticResponse(body)
+	if !inspection.Recognized {
+		return fmt.Errorf("semantic_response_unrecognized")
+	}
+	if inspection.HasOutput {
+		return nil
+	}
+	return newSemanticEmptyResponseError(inspection.EmptyKind, 0, inspection.OutputTextLen)
+}
+
+func looksLikeSemanticEventStream(contentType string, body []byte) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		return true
+	}
+	return bytes.Contains(body, []byte("data:"))
+}
+
 func inspectSemanticStreamEvent(eventData []byte) semanticStreamInspection {
 	var result semanticStreamInspection
 	scanner := bufio.NewScanner(bytes.NewReader(eventData))
+	sseEventType := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			sseEventType = ""
+			continue
+		}
+		if parsedEventType := sseEventTypeFromLine(line); parsedEventType != "" {
+			sseEventType = parsedEventType
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
@@ -116,6 +179,7 @@ func inspectSemanticStreamEvent(eventData []byte) semanticStreamInspection {
 		if err := json.Unmarshal([]byte(jsonData), &event); err != nil {
 			continue
 		}
+		ensureSSEEventType(event, sseEventType)
 		mergeStreamInspection(&result, inspectSemanticStreamJSON(event))
 	}
 	return result
@@ -133,12 +197,28 @@ func inspectSemanticStreamJSON(event map[string]interface{}) semanticStreamInspe
 		if hasNonEmptyString(event["delta"]) || hasNonEmptyString(event["text"]) {
 			result.HasOutput = true
 		}
+	case "response.output_text.done":
+		if hasNonEmptyString(event["text"]) || hasNonEmptyString(event["delta"]) {
+			result.HasOutput = true
+		}
 	case "response.content_part.added":
+		if part, ok := event["part"].(map[string]interface{}); ok && hasTextInOpenAI2ContentPart(part) {
+			result.HasOutput = true
+		}
+	case "response.content_part.done":
 		if part, ok := event["part"].(map[string]interface{}); ok && hasTextInOpenAI2ContentPart(part) {
 			result.HasOutput = true
 		}
 	case "response.output_item.added", "response.output_item.done":
 		if item, ok := event["item"].(map[string]interface{}); ok && hasValidResponsesOutputItem(item) {
+			result.HasOutput = true
+		}
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		if hasNonEmptyString(event["delta"]) || hasNonEmptyString(event["arguments"]) {
+			result.HasOutput = true
+		}
+	case "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done":
+		if hasNonEmptyString(event["delta"]) || hasNonEmptyString(event["input"]) {
 			result.HasOutput = true
 		}
 	case "response.completed":
@@ -179,6 +259,14 @@ func inspectSemanticStreamJSON(event map[string]interface{}) semanticStreamInspe
 			if delta, ok := choice["delta"].(map[string]interface{}); ok && hasValidOpenAIChatMessage(delta) {
 				result.HasOutput = true
 			}
+		}
+	}
+	if candidates, ok := event["candidates"].([]interface{}); ok {
+		if len(candidates) == 0 {
+			result.EmptyKind = emptyKindGeminiEmpty
+		}
+		if geminiCandidatesHaveOutput(candidates) {
+			result.HasOutput = true
 		}
 	}
 
@@ -351,6 +439,57 @@ func inspectClaudePayload(payload map[string]interface{}) semanticResponseInspec
 	return inspection
 }
 
+func hasGeminiShape(payload map[string]interface{}) bool {
+	if payload == nil {
+		return false
+	}
+	_, ok := payload["candidates"]
+	return ok
+}
+
+func inspectGeminiPayload(payload map[string]interface{}) semanticResponseInspection {
+	inspection := semanticResponseInspection{Recognized: true, EmptyKind: emptyKindGeminiEmpty}
+	candidates, ok := payload["candidates"].([]interface{})
+	if !ok || len(candidates) == 0 {
+		return inspection
+	}
+	if geminiCandidatesHaveOutput(candidates) {
+		inspection.HasOutput = true
+	}
+	inspection.OutputTextLen = len(extractResponseOutputText(mustMarshalJSON(payload)))
+	return inspection
+}
+
+func geminiCandidatesHaveOutput(candidates []interface{}) bool {
+	for _, rawCandidate := range candidates {
+		candidate, ok := rawCandidate.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := candidate["content"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		parts, ok := content["parts"].([]interface{})
+		if !ok || len(parts) == 0 {
+			continue
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if hasNonEmptyString(part["text"]) {
+				return true
+			}
+			if functionCall, ok := part["functionCall"].(map[string]interface{}); ok && hasNonEmptyString(functionCall["name"]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func hasValidOpenAIChatMessage(message map[string]interface{}) bool {
 	if message == nil {
 		return false
@@ -396,8 +535,10 @@ func hasValidResponsesOutputItem(item map[string]interface{}) bool {
 		return hasTextInOpenAI2Content(item["content"]) || hasValidToolCalls(item["tool_calls"])
 	case "function_call":
 		return hasValidResponsesFunctionCall(item)
+	case "reasoning":
+		return false
 	default:
-		return hasTextInOpenAI2Content(item["content"])
+		return hasTextInOpenAI2Content(item["content"]) || hasValidResponsesToolOutputItem(item)
 	}
 }
 
@@ -406,6 +547,23 @@ func hasValidResponsesFunctionCall(item map[string]interface{}) bool {
 		hasNonEmptyString(item["call_id"]) ||
 		hasNonEmptyString(item["id"]) ||
 		hasNonEmptyString(item["arguments"])
+}
+
+func hasValidResponsesToolOutputItem(item map[string]interface{}) bool {
+	if item == nil {
+		return false
+	}
+	itemType := strings.ToLower(strings.TrimSpace(stringFromInterface(item["type"])))
+	if itemType == "" || itemType == "message" || itemType == "reasoning" {
+		return false
+	}
+	return hasNonEmptyString(item["name"]) ||
+		hasNonEmptyString(item["call_id"]) ||
+		hasNonEmptyString(item["id"]) ||
+		hasNonEmptyString(item["arguments"]) ||
+		hasNonEmptyString(item["input"]) ||
+		hasNonEmptyString(item["status"]) ||
+		item["action"] != nil
 }
 
 func hasValidClaudeContentBlock(block map[string]interface{}) bool {

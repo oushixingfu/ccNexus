@@ -12,6 +12,7 @@ import (
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/providercompat"
+	"github.com/lich0821/ccNexus/internal/proxy"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -114,8 +115,8 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			model = providercompat.DefaultModel(transformer)
 		}
 		reqBody, err = json.Marshal(map[string]interface{}{
-			"model":             model,
-			"max_output_tokens": 16,
+			"model":  model,
+			"stream": true,
 			"input": []map[string]interface{}{
 				{
 					"type": "message",
@@ -165,6 +166,9 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case "openai", "openai2", "deepseek", "kimi":
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		if transformer == "openai2" {
+			req.Header.Set("Accept", "text/event-stream")
+		}
 	case "gemini":
 		// Gemini uses API key in URL query parameter
 		q := req.URL.Query()
@@ -190,9 +194,19 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
+	if err := proxy.ValidateSemanticResponseHasOutput(body, resp.Header.Get("Content-Type")); err != nil {
+		return "", fmt.Errorf("API returned no usable output: %v", err)
+	}
 
 	// Parse response to extract the actual message
 	var result map[string]interface{}
+	if transformer == "openai2" && isEventStreamResponse(resp.Header.Get("Content-Type"), body) {
+		if text := extractResponsesSSEText(body); text != "" {
+			return text, nil
+		}
+		return string(body), nil
+	}
+
 	if err := json.Unmarshal(body, &result); err != nil {
 		return string(body), nil
 	}
@@ -207,7 +221,11 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 				}
 			}
 		}
-	case "openai", "openai2", "deepseek", "kimi":
+	case "openai2":
+		if text := extractResponsesJSONText(result); text != "" {
+			return text, nil
+		}
+	case "openai", "deepseek", "kimi":
 		if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {
 				if message, ok := choice["message"].(map[string]interface{}); ok {
@@ -234,6 +252,74 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 	}
 
 	return string(body), nil
+}
+
+func isEventStreamResponse(contentType string, body []byte) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		return true
+	}
+	return strings.Contains(string(body), "data:")
+}
+
+func extractResponsesSSEText(body []byte) string {
+	var builder strings.Builder
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+		if delta, ok := event["delta"].(string); ok {
+			builder.WriteString(delta)
+		}
+		if text, ok := event["text"].(string); ok && builder.Len() == 0 {
+			builder.WriteString(text)
+		}
+		if response, ok := event["response"].(map[string]interface{}); ok {
+			if text := extractResponsesJSONText(response); text != "" && builder.Len() == 0 {
+				builder.WriteString(text)
+			}
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func extractResponsesJSONText(result map[string]interface{}) string {
+	if text, ok := result["output_text"].(string); ok && strings.TrimSpace(text) != "" {
+		return strings.TrimSpace(text)
+	}
+	output, ok := result["output"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var builder strings.Builder
+	for _, rawItem := range output {
+		item, ok := rawItem.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := item["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawPart := range content {
+			part, ok := rawPart.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if text, ok := part["text"].(string); ok {
+				builder.WriteString(text)
+			}
+		}
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func (h *Handler) resolveEndpointAPIKey(endpoint *storage.Endpoint) (string, error) {

@@ -25,6 +25,7 @@ const (
 	ThinkingMedium = "medium"
 	ThinkingHigh   = "high"
 	ThinkingXHigh  = "xhigh"
+	ThinkingMax    = "max"
 
 	CodexTokenPoolAPIURL      = "https://chatgpt.com/backend-api/codex"
 	CodexTokenPoolTransformer = "openai2"
@@ -60,9 +61,75 @@ func NormalizeThinkingEffort(effort string) string {
 		return ThinkingHigh
 	case ThinkingXHigh:
 		return ThinkingXHigh
+	case ThinkingMax:
+		return ThinkingMax
 	default:
 		return ThinkingOff
 	}
+}
+
+func OpenAI2EffortLevelForModel(model string, effort string) string {
+	normalized := NormalizeThinkingEffort(effort)
+	if normalized == "" || normalized == ThinkingOff {
+		return ""
+	}
+	if IsClaudeModelName(model) {
+		if normalized == ThinkingXHigh || normalized == ThinkingMax {
+			return ThinkingMax
+		}
+		return normalized
+	}
+	if normalized == ThinkingMax {
+		return ThinkingXHigh
+	}
+	return normalized
+}
+
+func OpenAI2ThinkingField(apiURL string, model string, effort string) (string, string) {
+	normalized := NormalizeThinkingEffort(effort)
+	if normalized == "" || normalized == ThinkingOff {
+		return "", ""
+	}
+	if ShouldUseOpenAI2EffortLevel(apiURL, model, effort) {
+		return "effortLevel", normalized
+	}
+	return "reasoning", OpenAI2EffortLevelForModel(model, normalized)
+}
+
+func ShouldUseOpenAI2EffortLevel(apiURL string, model string, effort string) bool {
+	if strings.TrimSpace(apiURL) != "" {
+		return !IsOfficialOpenAIAPIURL(apiURL)
+	}
+
+	if IsClaudeModelName(model) {
+		return true
+	}
+
+	normalized := NormalizeThinkingEffort(effort)
+	return normalized == ThinkingXHigh || normalized == ThinkingMax
+}
+
+func IsOfficialOpenAIAPIURL(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return false
+	}
+	if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+		trimmed = "https://" + trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed == nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Hostname(), "api.openai.com")
+}
+
+func IsClaudeModelName(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(lower, "claude") ||
+		strings.Contains(lower, "opus") ||
+		strings.Contains(lower, "sonnet") ||
+		strings.Contains(lower, "haiku")
 }
 
 func ApplyEndpointAuthModeRules(ep *Endpoint) {
@@ -74,6 +141,8 @@ func ApplyEndpointAuthModeRules(ep *Endpoint) {
 	ep.Thinking = NormalizeThinkingEffort(ep.Thinking)
 	ep.APIUrl = strings.TrimSuffix(strings.TrimSpace(ep.APIUrl), "/")
 	ep.Transformer = providercompat.NormalizeTransformer(ep.Transformer)
+	ep.PreferredClaudeUpstream = NormalizeEndpointUpstreamPreference(ep.PreferredClaudeUpstream)
+	ep.PreferredOpenAIUpstream = NormalizeEndpointUpstreamPreference(ep.PreferredOpenAIUpstream)
 
 	// Compatibility migration:
 	// legacy token_pool + openai2 + codex backend URL => codex_token_pool.
@@ -95,6 +164,25 @@ func ApplyEndpointAuthModeRules(ep *Endpoint) {
 
 	if ep.AuthMode == AuthModeTokenPool {
 		ep.APIKey = ""
+	}
+}
+
+func NormalizeEndpointUpstreamPreference(preference string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(preference))
+	switch trimmed {
+	case "", "auto", "inherit", "default":
+		return ""
+	}
+
+	switch providercompat.NormalizeTransformer(trimmed) {
+	case providercompat.TransformerClaude:
+		return providercompat.TransformerClaude
+	case providercompat.TransformerOpenAI:
+		return providercompat.TransformerOpenAI
+	case providercompat.TransformerOpenAI2:
+		return providercompat.TransformerOpenAI2
+	default:
+		return ""
 	}
 }
 
@@ -124,16 +212,22 @@ func isCodexBackendAPIURL(raw string) bool {
 
 // Endpoint represents a single API endpoint configuration
 type Endpoint struct {
-	Name        string `json:"name"`
-	APIUrl      string `json:"apiUrl"`
-	APIKey      string `json:"apiKey"`
-	AuthMode    string `json:"authMode,omitempty"`
-	Enabled     bool   `json:"enabled"`
-	Transformer string `json:"transformer,omitempty"` // Transformer type: claude, openai, openai2, gemini, deepseek, kimi
-	Model       string `json:"model,omitempty"`       // Target model name for non-Claude APIs
-	Thinking    string `json:"thinking,omitempty"`    // Reasoning effort: off, low, medium, high, xhigh
-	ForceStream bool   `json:"forceStream,omitempty"`
-	Remark      string `json:"remark,omitempty"` // Optional remark for the endpoint
+	Name                    string `json:"name"`
+	APIUrl                  string `json:"apiUrl"`
+	APIKey                  string `json:"apiKey"`
+	AuthMode                string `json:"authMode,omitempty"`
+	Enabled                 bool   `json:"enabled"`
+	Transformer             string `json:"transformer,omitempty"` // Transformer type: claude, openai, openai2, gemini, deepseek, kimi
+	Model                   string `json:"model,omitempty"`       // Target model name for non-Claude APIs
+	Thinking                string `json:"thinking,omitempty"`    // Reasoning effort: off, low, medium, high, xhigh
+	ForceStream             bool   `json:"forceStream,omitempty"`
+	AutoSelect              bool   `json:"autoSelect,omitempty"`
+	SupportsOpenAIResponses bool   `json:"supportsOpenAIResponses,omitempty"`
+	SupportsOpenAIChat      bool   `json:"supportsOpenAIChat,omitempty"`
+	SupportsClaudeMessages  bool   `json:"supportsClaudeMessages,omitempty"`
+	PreferredClaudeUpstream string `json:"preferredClaudeUpstream,omitempty"` // auto, claude, openai2, openai
+	PreferredOpenAIUpstream string `json:"preferredOpenAIUpstream,omitempty"` // auto, openai2, openai, claude
+	Remark                  string `json:"remark,omitempty"`                  // Optional remark for the endpoint
 }
 
 // WebDAVConfig represents WebDAV synchronization configuration
@@ -204,6 +298,7 @@ type FailoverCooldownConfig struct {
 type FailoverConfig struct {
 	RecoveredEndpointPolicy string                  `json:"recoveredEndpointPolicy"`
 	Cooldowns               *FailoverCooldownConfig `json:"cooldowns,omitempty"`
+	HealthCheckIntervalSec  int                     `json:"healthCheckIntervalSec,omitempty"` // Health check polling interval in seconds (default 60)
 }
 
 // Config represents the application configuration
@@ -249,6 +344,7 @@ func DefaultFailoverConfig() *FailoverConfig {
 			TokenUnavailableSec: 600,
 			ConfigErrorSec:      1800,
 		},
+		HealthCheckIntervalSec: 60,
 	}
 }
 
@@ -262,6 +358,7 @@ func NormalizeFailoverConfig(failover *FailoverConfig) *FailoverConfig {
 	normalized := &FailoverConfig{
 		RecoveredEndpointPolicy: strings.TrimSpace(failover.RecoveredEndpointPolicy),
 		Cooldowns:               &FailoverCooldownConfig{},
+		HealthCheckIntervalSec:  normalizeCooldownSeconds(failover.HealthCheckIntervalSec, defaults.HealthCheckIntervalSec),
 	}
 	if normalized.RecoveredEndpointPolicy != RecoveredEndpointPolicyAutoReturn &&
 		normalized.RecoveredEndpointPolicy != RecoveredEndpointPolicyDeprioritize {
@@ -695,17 +792,23 @@ type StorageAdapter interface {
 
 // StorageEndpoint represents an endpoint in storage
 type StorageEndpoint struct {
-	Name        string
-	APIUrl      string
-	APIKey      string
-	AuthMode    string
-	Enabled     bool
-	Transformer string
-	Model       string
-	Thinking    string
-	ForceStream bool
-	Remark      string
-	SortOrder   int
+	Name                    string
+	APIUrl                  string
+	APIKey                  string
+	AuthMode                string
+	Enabled                 bool
+	Transformer             string
+	Model                   string
+	Thinking                string
+	ForceStream             bool
+	AutoSelect              bool
+	SupportsOpenAIResponses bool
+	SupportsOpenAIChat      bool
+	SupportsClaudeMessages  bool
+	PreferredClaudeUpstream string
+	PreferredOpenAIUpstream string
+	Remark                  string
+	SortOrder               int
 }
 
 // LoadFromStorage loads configuration from SQLite storage
@@ -721,16 +824,22 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 
 	for _, ep := range endpoints {
 		endpoint := Endpoint{
-			Name:        ep.Name,
-			APIUrl:      ep.APIUrl,
-			APIKey:      ep.APIKey,
-			AuthMode:    NormalizeAuthMode(ep.AuthMode),
-			Enabled:     ep.Enabled,
-			Transformer: ep.Transformer,
-			Model:       ep.Model,
-			Thinking:    ep.Thinking,
-			ForceStream: ep.ForceStream,
-			Remark:      ep.Remark,
+			Name:                    ep.Name,
+			APIUrl:                  ep.APIUrl,
+			APIKey:                  ep.APIKey,
+			AuthMode:                NormalizeAuthMode(ep.AuthMode),
+			Enabled:                 ep.Enabled,
+			Transformer:             ep.Transformer,
+			Model:                   ep.Model,
+			Thinking:                ep.Thinking,
+			ForceStream:             ep.ForceStream,
+			AutoSelect:              ep.AutoSelect,
+			SupportsOpenAIResponses: ep.SupportsOpenAIResponses,
+			SupportsOpenAIChat:      ep.SupportsOpenAIChat,
+			SupportsClaudeMessages:  ep.SupportsClaudeMessages,
+			PreferredClaudeUpstream: ep.PreferredClaudeUpstream,
+			PreferredOpenAIUpstream: ep.PreferredOpenAIUpstream,
+			Remark:                  ep.Remark,
 		}
 		if endpoint.Transformer == "" {
 			endpoint.Transformer = "claude"
@@ -932,6 +1041,11 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 	if policy, err := storage.GetConfig("failover_recoveredEndpointPolicy"); err == nil && policy != "" {
 		config.Failover.RecoveredEndpointPolicy = policy
 	}
+	if intervalStr, err := storage.GetConfig("failover_healthCheckIntervalSec"); err == nil && intervalStr != "" {
+		if interval, err := strconv.Atoi(intervalStr); err == nil {
+			config.Failover.HealthCheckIntervalSec = interval
+		}
+	}
 	loadFailoverCooldown := func(key string, apply func(int)) {
 		valueStr, err := storage.GetConfig(key)
 		if err != nil || valueStr == "" {
@@ -1010,16 +1124,22 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 			SortOrder: i, // Use array index as sort order
 		}
 		normalizedEndpoint := Endpoint{
-			Name:        ep.Name,
-			APIUrl:      ep.APIUrl,
-			APIKey:      ep.APIKey,
-			AuthMode:    ep.AuthMode,
-			Enabled:     ep.Enabled,
-			Transformer: ep.Transformer,
-			Model:       ep.Model,
-			Thinking:    ep.Thinking,
-			ForceStream: ep.ForceStream,
-			Remark:      ep.Remark,
+			Name:                    ep.Name,
+			APIUrl:                  ep.APIUrl,
+			APIKey:                  ep.APIKey,
+			AuthMode:                ep.AuthMode,
+			Enabled:                 ep.Enabled,
+			Transformer:             ep.Transformer,
+			Model:                   ep.Model,
+			Thinking:                ep.Thinking,
+			ForceStream:             ep.ForceStream,
+			AutoSelect:              ep.AutoSelect,
+			SupportsOpenAIResponses: ep.SupportsOpenAIResponses,
+			SupportsOpenAIChat:      ep.SupportsOpenAIChat,
+			SupportsClaudeMessages:  ep.SupportsClaudeMessages,
+			PreferredClaudeUpstream: ep.PreferredClaudeUpstream,
+			PreferredOpenAIUpstream: ep.PreferredOpenAIUpstream,
+			Remark:                  ep.Remark,
 		}
 		if normalizedEndpoint.Transformer == "" {
 			normalizedEndpoint.Transformer = "claude"
@@ -1033,6 +1153,12 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 		endpoint.Model = normalizedEndpoint.Model
 		endpoint.Thinking = normalizedEndpoint.Thinking
 		endpoint.ForceStream = normalizedEndpoint.ForceStream
+		endpoint.AutoSelect = normalizedEndpoint.AutoSelect
+		endpoint.SupportsOpenAIResponses = normalizedEndpoint.SupportsOpenAIResponses
+		endpoint.SupportsOpenAIChat = normalizedEndpoint.SupportsOpenAIChat
+		endpoint.SupportsClaudeMessages = normalizedEndpoint.SupportsClaudeMessages
+		endpoint.PreferredClaudeUpstream = normalizedEndpoint.PreferredClaudeUpstream
+		endpoint.PreferredOpenAIUpstream = normalizedEndpoint.PreferredOpenAIUpstream
 		endpoint.Remark = normalizedEndpoint.Remark
 		endpoint.SortOrder = i
 
@@ -1205,6 +1331,9 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	failover := NormalizeFailoverConfig(c.Failover)
 	if err := storage.SetConfig("failover_recoveredEndpointPolicy", failover.RecoveredEndpointPolicy); err != nil {
 		return fmt.Errorf("failed to save failover_recoveredEndpointPolicy config: %w", err)
+	}
+	if err := storage.SetConfig("failover_healthCheckIntervalSec", strconv.Itoa(failover.HealthCheckIntervalSec)); err != nil {
+		return fmt.Errorf("failed to save failover_healthCheckIntervalSec config: %w", err)
 	}
 	if err := storage.SetConfig("failover_cooldown_quotaExhaustedSec", strconv.Itoa(failover.Cooldowns.QuotaExhaustedSec)); err != nil {
 		return fmt.Errorf("failed to save failover_cooldown_quotaExhaustedSec config: %w", err)

@@ -142,6 +142,9 @@ func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "Failed to save configuration")
 		return
 	}
+	if h.proxy != nil {
+		h.proxy.RefreshHealthCheckWatchSet()
+	}
 
 	WriteSuccess(w, map[string]interface{}{
 		"message": "Configuration updated successfully",

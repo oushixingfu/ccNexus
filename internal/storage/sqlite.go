@@ -40,6 +40,7 @@ var safeConfigKeys = []string{
 }
 
 const deepSeekThinkingDefaultMigrationKey = "migration_deepseek_thinking_default_v1"
+const endpointAutoSelectDefaultsMigrationKey = "migration_endpoint_auto_select_defaults_v1"
 
 type SQLiteStorage struct {
 	db     *sql.DB
@@ -97,6 +98,12 @@ func (s *SQLiteStorage) initSchema() error {
 		model TEXT,
 			thinking TEXT DEFAULT '',
 		force_stream BOOLEAN DEFAULT FALSE,
+		auto_select BOOLEAN DEFAULT FALSE,
+		supports_openai_responses BOOLEAN DEFAULT FALSE,
+		supports_openai_chat BOOLEAN DEFAULT FALSE,
+		supports_claude_messages BOOLEAN DEFAULT FALSE,
+		preferred_claude_upstream TEXT DEFAULT '',
+		preferred_openai_upstream TEXT DEFAULT '',
 		remark TEXT,
 		sort_order INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -202,6 +209,9 @@ func (s *SQLiteStorage) initSchema() error {
 		return err
 	}
 	if err := s.migrateForceStream(); err != nil {
+		return err
+	}
+	if err := s.migrateEndpointAutoSelect(); err != nil {
 		return err
 	}
 	if err := s.migrateEndpointRuntimeFailureStatusCode(); err != nil {
@@ -314,6 +324,77 @@ func (s *SQLiteStorage) migrateForceStream() error {
 	return err
 }
 
+func (s *SQLiteStorage) migrateEndpointAutoSelect() error {
+	columns := []struct {
+		name       string
+		definition string
+		update     string
+	}{
+		{"auto_select", "BOOLEAN DEFAULT FALSE", "FALSE"},
+		{"supports_openai_responses", "BOOLEAN DEFAULT FALSE", "FALSE"},
+		{"supports_openai_chat", "BOOLEAN DEFAULT FALSE", "FALSE"},
+		{"supports_claude_messages", "BOOLEAN DEFAULT FALSE", "FALSE"},
+		{"preferred_claude_upstream", "TEXT DEFAULT ''", "''"},
+		{"preferred_openai_upstream", "TEXT DEFAULT ''", "''"},
+	}
+
+	for _, column := range columns {
+		var count int
+		err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoints') WHERE name=?`, column.name).Scan(&count)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := s.db.Exec(fmt.Sprintf(`ALTER TABLE endpoints ADD COLUMN %s %s`, column.name, column.definition)); err != nil {
+				return err
+			}
+		}
+		if _, err := s.db.Exec(fmt.Sprintf(`UPDATE endpoints SET %s=%s WHERE %s IS NULL`, column.name, column.update, column.name)); err != nil {
+			return err
+		}
+	}
+
+	var done string
+	if err := s.db.QueryRow(`SELECT value FROM app_config WHERE key=?`, endpointAutoSelectDefaultsMigrationKey).Scan(&done); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if done == "done" {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`
+		UPDATE endpoints
+		SET
+			supports_openai_responses = CASE
+				WHEN lower(COALESCE(transformer, '')) IN ('openai2', 'openai_responses', 'responses') THEN TRUE
+				ELSE supports_openai_responses
+			END,
+			supports_openai_chat = CASE
+				WHEN lower(COALESCE(transformer, '')) IN ('openai', 'openai_chat', 'chat', 'chat_completions', 'deepseek', 'deepseek_chat', 'kimi', 'moonshot', 'moonshotai') THEN TRUE
+				ELSE supports_openai_chat
+			END,
+			supports_claude_messages = CASE
+				WHEN lower(COALESCE(transformer, '')) IN ('', 'claude') THEN TRUE
+				ELSE supports_claude_messages
+			END
+		WHERE
+			COALESCE(supports_openai_responses, FALSE) = FALSE
+			AND COALESCE(supports_openai_chat, FALSE) = FALSE
+			AND COALESCE(supports_claude_messages, FALSE) = FALSE
+			AND COALESCE(preferred_claude_upstream, '') = ''
+			AND COALESCE(preferred_openai_upstream, '') = ''
+	`); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO app_config (key, value)
+		VALUES (?, 'done')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP
+	`, endpointAutoSelectDefaultsMigrationKey)
+	return err
+}
+
 func (s *SQLiteStorage) migrateEndpointRuntimeFailureStatusCode() error {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('endpoint_runtime_status') WHERE name='last_failure_status_code'`).Scan(&count)
@@ -335,7 +416,7 @@ func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, COALESCE(thinking, ''), force_stream, remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
+	rows, err := s.db.Query(`SELECT id, name, api_url, api_key, auth_mode, enabled, transformer, model, COALESCE(thinking, ''), force_stream, auto_select, supports_openai_responses, supports_openai_chat, supports_claude_messages, COALESCE(preferred_claude_upstream, ''), COALESCE(preferred_openai_upstream, ''), remark, sort_order, created_at, updated_at FROM endpoints ORDER BY sort_order ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +425,7 @@ func (s *SQLiteStorage) GetEndpoints() ([]Endpoint, error) {
 	var endpoints []Endpoint
 	for rows.Next() {
 		var ep Endpoint
-		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.AuthMode, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Thinking, &ep.ForceStream, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.AuthMode, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Thinking, &ep.ForceStream, &ep.AutoSelect, &ep.SupportsOpenAIResponses, &ep.SupportsOpenAIChat, &ep.SupportsClaudeMessages, &ep.PreferredClaudeUpstream, &ep.PreferredOpenAIUpstream, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
 		normalizeEndpointAuthMode(&ep)
@@ -360,8 +441,8 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
 
 	normalizeEndpointAuthMode(ep)
 
-	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, thinking, force_stream, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.ForceStream, ep.Remark, ep.SortOrder)
+	result, err := s.db.Exec(`INSERT INTO endpoints (name, api_url, api_key, auth_mode, enabled, transformer, model, thinking, force_stream, auto_select, supports_openai_responses, supports_openai_chat, supports_claude_messages, preferred_claude_upstream, preferred_openai_upstream, remark, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.ForceStream, ep.AutoSelect, ep.SupportsOpenAIResponses, ep.SupportsOpenAIChat, ep.SupportsClaudeMessages, ep.PreferredClaudeUpstream, ep.PreferredOpenAIUpstream, ep.Remark, ep.SortOrder)
 	if err != nil {
 		return err
 	}
@@ -375,14 +456,73 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
 }
 
 func (s *SQLiteStorage) UpdateEndpoint(ep *Endpoint) error {
+	if ep == nil {
+		return fmt.Errorf("endpoint is nil")
+	}
+
+	return s.UpdateEndpointByName(ep.Name, ep)
+}
+
+func (s *SQLiteStorage) UpdateEndpointByName(oldName string, ep *Endpoint) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if ep == nil {
+		return fmt.Errorf("endpoint is nil")
+	}
+	if strings.TrimSpace(oldName) == "" {
+		return fmt.Errorf("old endpoint name is required")
+	}
+	if strings.TrimSpace(ep.Name) == "" {
+		return fmt.Errorf("endpoint name is required")
+	}
+
 	normalizeEndpointAuthMode(ep)
 
-	_, err := s.db.Exec(`UPDATE endpoints SET api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, thinking=?, force_stream=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
-		ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.ForceStream, ep.Remark, ep.SortOrder, ep.Name)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM endpoints WHERE name=?`, oldName).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return sql.ErrNoRows
+	}
+
+	if _, err := tx.Exec(`UPDATE endpoints SET name=?, api_url=?, api_key=?, auth_mode=?, enabled=?, transformer=?, model=?, thinking=?, force_stream=?, auto_select=?, supports_openai_responses=?, supports_openai_chat=?, supports_claude_messages=?, preferred_claude_upstream=?, preferred_openai_upstream=?, remark=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE name=?`,
+		ep.Name, ep.APIUrl, ep.APIKey, ep.AuthMode, ep.Enabled, ep.Transformer, ep.Model, ep.Thinking, ep.ForceStream, ep.AutoSelect, ep.SupportsOpenAIResponses, ep.SupportsOpenAIChat, ep.SupportsClaudeMessages, ep.PreferredClaudeUpstream, ep.PreferredOpenAIUpstream, ep.Remark, ep.SortOrder, oldName); err != nil {
+		return err
+	}
+
+	if ep.Name != oldName {
+		renameQueries := []string{
+			`UPDATE endpoint_credentials SET endpoint_name=? WHERE endpoint_name=?`,
+			`UPDATE credential_usage SET endpoint_name=? WHERE endpoint_name=?`,
+			`UPDATE endpoint_runtime_status SET endpoint_name=? WHERE endpoint_name=?`,
+			`UPDATE daily_stats SET endpoint_name=? WHERE endpoint_name=?`,
+			`UPDATE app_config SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key='current_endpoint' AND value=?`,
+		}
+		for _, query := range renameQueries {
+			if _, err := tx.Exec(query, ep.Name, oldName); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (s *SQLiteStorage) DeleteEndpoint(name string) error {
@@ -571,6 +711,14 @@ func (s *SQLiteStorage) GetAllStats() (map[string][]DailyStat, error) {
 	}
 
 	return result, rows.Err()
+}
+
+func (s *SQLiteStorage) ClearStats() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`DELETE FROM daily_stats`)
+	return err
 }
 
 func (s *SQLiteStorage) GetConfig(key string) (string, error) {
@@ -910,40 +1058,56 @@ func (s *SQLiteStorage) DetectEndpointConflicts(remoteDBPath string) ([]MergeCon
 
 // getEndpointsFromDB gets endpoints from a specific database (main or attached)
 func (s *SQLiteStorage) getEndpointsFromDB(db *sql.DB, dbName string) ([]Endpoint, error) {
-	var authModeColumnCount int
-	columnCheck := fmt.Sprintf(`SELECT COUNT(*) FROM %s.pragma_table_info('endpoints') WHERE name='auth_mode'`, dbName)
-	if err := db.QueryRow(columnCheck).Scan(&authModeColumnCount); err != nil {
+	selectAuthMode, err := endpointColumnSelect(db, dbName, "auth_mode", "COALESCE(auth_mode, 'api_key')", "'api_key'")
+	if err != nil {
+		return nil, err
+	}
+	selectThinking, err := endpointColumnSelect(db, dbName, "thinking", "COALESCE(thinking, '')", "''")
+	if err != nil {
+		return nil, err
+	}
+	selectForceStream, err := endpointColumnSelect(db, dbName, "force_stream", "COALESCE(force_stream, FALSE)", "FALSE")
+	if err != nil {
+		return nil, err
+	}
+	selectAutoSelect, err := endpointColumnSelect(db, dbName, "auto_select", "COALESCE(auto_select, FALSE)", "FALSE")
+	if err != nil {
+		return nil, err
+	}
+	selectSupportsOpenAIResponses, err := endpointColumnSelect(db, dbName, "supports_openai_responses", "COALESCE(supports_openai_responses, FALSE)", "FALSE")
+	if err != nil {
+		return nil, err
+	}
+	selectSupportsOpenAIChat, err := endpointColumnSelect(db, dbName, "supports_openai_chat", "COALESCE(supports_openai_chat, FALSE)", "FALSE")
+	if err != nil {
+		return nil, err
+	}
+	selectSupportsClaudeMessages, err := endpointColumnSelect(db, dbName, "supports_claude_messages", "COALESCE(supports_claude_messages, FALSE)", "FALSE")
+	if err != nil {
+		return nil, err
+	}
+	selectPreferredClaudeUpstream, err := endpointColumnSelect(db, dbName, "preferred_claude_upstream", "COALESCE(preferred_claude_upstream, '')", "''")
+	if err != nil {
+		return nil, err
+	}
+	selectPreferredOpenAIUpstream, err := endpointColumnSelect(db, dbName, "preferred_openai_upstream", "COALESCE(preferred_openai_upstream, '')", "''")
+	if err != nil {
 		return nil, err
 	}
 
-	var thinkingColumnCount int
-	columnCheck = fmt.Sprintf(`SELECT COUNT(*) FROM %s.pragma_table_info('endpoints') WHERE name='thinking'`, dbName)
-	if err := db.QueryRow(columnCheck).Scan(&thinkingColumnCount); err != nil {
-		return nil, err
-	}
-
-	var forceStreamColumnCount int
-	columnCheck = fmt.Sprintf(`SELECT COUNT(*) FROM %s.pragma_table_info('endpoints') WHERE name='force_stream'`, dbName)
-	if err := db.QueryRow(columnCheck).Scan(&forceStreamColumnCount); err != nil {
-		return nil, err
-	}
-
-	selectAuthMode := "'api_key'"
-	if authModeColumnCount > 0 {
-		selectAuthMode = "COALESCE(auth_mode, 'api_key')"
-	}
-
-	selectThinking := "''"
-	if thinkingColumnCount > 0 {
-		selectThinking = "COALESCE(thinking, '')"
-	}
-
-	selectForceStream := "FALSE"
-	if forceStreamColumnCount > 0 {
-		selectForceStream = "COALESCE(force_stream, FALSE)"
-	}
-
-	query := fmt.Sprintf(`SELECT id, name, api_url, api_key, %s as auth_mode, enabled, transformer, model, %s as thinking, %s as force_stream, remark, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`, selectAuthMode, selectThinking, selectForceStream, dbName)
+	query := fmt.Sprintf(
+		`SELECT id, name, api_url, api_key, %s as auth_mode, enabled, transformer, model, %s as thinking, %s as force_stream, %s as auto_select, %s as supports_openai_responses, %s as supports_openai_chat, %s as supports_claude_messages, %s as preferred_claude_upstream, %s as preferred_openai_upstream, remark, COALESCE(sort_order, 0) as sort_order, created_at, updated_at FROM %s.endpoints`,
+		selectAuthMode,
+		selectThinking,
+		selectForceStream,
+		selectAutoSelect,
+		selectSupportsOpenAIResponses,
+		selectSupportsOpenAIChat,
+		selectSupportsClaudeMessages,
+		selectPreferredClaudeUpstream,
+		selectPreferredOpenAIUpstream,
+		dbName,
+	)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -954,7 +1118,7 @@ func (s *SQLiteStorage) getEndpointsFromDB(db *sql.DB, dbName string) ([]Endpoin
 	var endpoints []Endpoint
 	for rows.Next() {
 		var ep Endpoint
-		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.AuthMode, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Thinking, &ep.ForceStream, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
+		if err := rows.Scan(&ep.ID, &ep.Name, &ep.APIUrl, &ep.APIKey, &ep.AuthMode, &ep.Enabled, &ep.Transformer, &ep.Model, &ep.Thinking, &ep.ForceStream, &ep.AutoSelect, &ep.SupportsOpenAIResponses, &ep.SupportsOpenAIChat, &ep.SupportsClaudeMessages, &ep.PreferredClaudeUpstream, &ep.PreferredOpenAIUpstream, &ep.Remark, &ep.SortOrder, &ep.CreatedAt, &ep.UpdatedAt); err != nil {
 			return nil, err
 		}
 		normalizeEndpointAuthMode(&ep)
@@ -964,21 +1128,39 @@ func (s *SQLiteStorage) getEndpointsFromDB(db *sql.DB, dbName string) ([]Endpoin
 	return endpoints, rows.Err()
 }
 
+func endpointColumnSelect(db *sql.DB, dbName, columnName, ifExists, ifMissing string) (string, error) {
+	var count int
+	columnCheck := fmt.Sprintf(`SELECT COUNT(*) FROM %s.pragma_table_info('endpoints') WHERE name=?`, dbName)
+	if err := db.QueryRow(columnCheck, columnName).Scan(&count); err != nil {
+		return "", err
+	}
+	if count > 0 {
+		return ifExists, nil
+	}
+	return ifMissing, nil
+}
+
 func normalizeEndpointAuthMode(ep *Endpoint) {
 	if ep == nil {
 		return
 	}
 	normalized := config.Endpoint{
-		Name:        ep.Name,
-		APIUrl:      ep.APIUrl,
-		APIKey:      ep.APIKey,
-		AuthMode:    ep.AuthMode,
-		Enabled:     ep.Enabled,
-		Transformer: ep.Transformer,
-		Model:       ep.Model,
-		Thinking:    ep.Thinking,
-		ForceStream: ep.ForceStream,
-		Remark:      ep.Remark,
+		Name:                    ep.Name,
+		APIUrl:                  ep.APIUrl,
+		APIKey:                  ep.APIKey,
+		AuthMode:                ep.AuthMode,
+		Enabled:                 ep.Enabled,
+		Transformer:             ep.Transformer,
+		Model:                   ep.Model,
+		Thinking:                ep.Thinking,
+		ForceStream:             ep.ForceStream,
+		AutoSelect:              ep.AutoSelect,
+		SupportsOpenAIResponses: ep.SupportsOpenAIResponses,
+		SupportsOpenAIChat:      ep.SupportsOpenAIChat,
+		SupportsClaudeMessages:  ep.SupportsClaudeMessages,
+		PreferredClaudeUpstream: ep.PreferredClaudeUpstream,
+		PreferredOpenAIUpstream: ep.PreferredOpenAIUpstream,
+		Remark:                  ep.Remark,
 	}
 	if normalized.Transformer == "" {
 		normalized.Transformer = "claude"
@@ -991,6 +1173,12 @@ func normalizeEndpointAuthMode(ep *Endpoint) {
 	ep.Model = normalized.Model
 	ep.Thinking = normalized.Thinking
 	ep.ForceStream = normalized.ForceStream
+	ep.AutoSelect = normalized.AutoSelect
+	ep.SupportsOpenAIResponses = normalized.SupportsOpenAIResponses
+	ep.SupportsOpenAIChat = normalized.SupportsOpenAIChat
+	ep.SupportsClaudeMessages = normalized.SupportsClaudeMessages
+	ep.PreferredClaudeUpstream = normalized.PreferredClaudeUpstream
+	ep.PreferredOpenAIUpstream = normalized.PreferredOpenAIUpstream
 	ep.Remark = normalized.Remark
 }
 
@@ -1021,6 +1209,24 @@ func compareEndpoints(local, remote Endpoint) []string {
 	}
 	if local.ForceStream != remote.ForceStream {
 		conflicts = append(conflicts, "forceStream")
+	}
+	if local.AutoSelect != remote.AutoSelect {
+		conflicts = append(conflicts, "autoSelect")
+	}
+	if local.SupportsOpenAIResponses != remote.SupportsOpenAIResponses {
+		conflicts = append(conflicts, "supportsOpenAIResponses")
+	}
+	if local.SupportsOpenAIChat != remote.SupportsOpenAIChat {
+		conflicts = append(conflicts, "supportsOpenAIChat")
+	}
+	if local.SupportsClaudeMessages != remote.SupportsClaudeMessages {
+		conflicts = append(conflicts, "supportsClaudeMessages")
+	}
+	if local.PreferredClaudeUpstream != remote.PreferredClaudeUpstream {
+		conflicts = append(conflicts, "preferredClaudeUpstream")
+	}
+	if local.PreferredOpenAIUpstream != remote.PreferredOpenAIUpstream {
+		conflicts = append(conflicts, "preferredOpenAIUpstream")
 	}
 	if local.Remark != remote.Remark {
 		conflicts = append(conflicts, "remark")

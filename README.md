@@ -1,153 +1,75 @@
-<div align="center">
+# ccNexus 重构版
 
-<p align="center">
-  <img src="docs/images/ccNexus.svg" alt="Claude Code、Codex CLI、Hermes Agent 与 OpenClaw API Provider 热切换中枢" width="720" />
-</p>
+这是基于原 ccNexus 项目继续改造的分支，重点不是重新做一个全新的代理，而是把原来的端点轮换代理改成更适合长期运行的稳定版本。
 
-[![构建状态](https://github.com/jackychanisnotme/ccNexus/actions/workflows/build.yml/badge.svg)](https://github.com/jackychanisnotme/ccNexus/actions)
-[![最新版本](https://img.shields.io/github/v/release/jackychanisnotme/ccNexus?label=release)](https://github.com/jackychanisnotme/ccNexus/releases/latest)
-[![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go 版本](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
-[![Wails](https://img.shields.io/badge/Wails-v2-blue)](https://wails.io/)
+这个分支主要围绕四件事改造：
 
-[English](docs/README_EN.md) | [简体中文](README.md)
+- 稳定流式请求，避免上游 SSE 半截断开导致客户端一直报 `stream disconnected before completion`。
+- 优先使用 Claude 端点，Claude 不可用时切到 GPT，Claude 恢复后快速自动切回。
+- 优化端点故障转移，避免一次请求失败把全局当前端点频繁打乱。
+- 修复 Web UI 端点管理细节，包括端点改名、运行状态、强制流式配置和健康检查刷新。
 
-</div>
+## 我重构/修改的内容
 
-ccNexus 不只是 Claude Code、Codex CLI、Hermes Agent 与 OpenClaw 的智能端点轮换代理，也是一套面向 AI 开发工作流的 API 资源管理系统。它把端点、模型、密钥、Codex Token Pool、额度、统计和备份统一管理起来，并对外提供一个稳定的本地 API Provider：Hermes、OpenClaw、Codex、Claude Code 等客户端只需指向 ccNexus，就可以在不同上游、账号、模型之间热切换，无需反复修改每个工具的配置。
+| 模块 | 修改内容 | 目的 |
+|------|----------|------|
+| 流式响应处理 | 对 OpenAI Responses SSE 增加完成事件检查，缺少 `response.completed` 时写入兼容的终止事件或失败事件 | 减少 Codex/Responses 客户端断流报错 |
+| 上游强制流式 | 端点启用强制流式后，流式和非流式客户端都会稳定向上游发送 `stream=true` | 适配只接受流式的上游 |
+| 非流式聚合 | 非流式客户端遇到强制流式上游时，代理会聚合 SSE 后返回普通响应 | 兼容不支持流式的客户端 |
+| 语义空响应检测 | 对 200 但没有有效输出的响应进行识别，避免把空结果当成功 | 降低假成功和错误切换 |
+| 请求级故障转移 | 单次请求内可以 fallback 到下一个端点，但默认不直接污染全局当前端点 | 提高并发请求稳定性 |
+| 冷却策略 | 按错误类型配置冷却时间，区分限流、上游错误、网络错误、Token 不可用、配置错误 | 避免反复打已经失败的端点 |
+| 自动回切策略 | 新增/强化 `auto_return`，高优先级端点恢复后自动切回 | 满足优先 Claude、失败再 GPT、恢复快速回 Claude |
+| 健康检查 | 新增后台健康检查、即时唤醒、优先端点监听、SSE 有界读取 | 加快恢复判断，避免健康检查被长连接拖住 |
+| 健康状态持久化 | 健康检查恢复成功会写回 runtime success | 避免重启或配置刷新后重复误判 |
+| 端点改名 | 支持在 Web UI 修改端点名称，并同步更新凭证、统计、运行状态和当前端点引用 | 修复端点管理无法改名的问题 |
+| 上游协议选择 | 增加端点能力字段和 Claude/OpenAI 上游偏好 | 一个端点可按客户端类型选择更合适的上游协议 |
+| 模型和 thinking | 端点级模型覆盖、thinking/reasoning 注入和上游字段适配 | 减少客户端配置重复 |
+| Web UI | 增加/修正强制流式、自动选择、上游能力、恢复策略、冷却时间等配置项 | 让关键策略可以直接在界面配置 |
+| 日志与可观测性 | 增加 Request ID、尝试次数、失败原因、端点运行态、状态码等信息 | 方便排查哪个端点失败、为什么切换 |
+| Docker/Server 模式 | 优化 server 模式、Basic Auth、健康检查和运行目录配置 | 适合部署为本地或服务器 API Provider |
 
-> [!IMPORTANT]
-> 当前仓库维护 Optimized 版本，重点增强 Codex CLI、Claude Code、Hermes Agent、OpenClaw、OpenAI Responses API、DeepSeek、Kimi 等兼容场景。
->
-> 最新发布：[`ccNexus Optimized`](https://github.com/jackychanisnotme/ccNexus/releases/latest)
+## 与原项目功能对比
 
-## 功能特性
+| 功能/行为 | 原项目 | 当前重构分支 |
+|-----------|--------|--------------|
+| 基础代理 | 支持本地 API 代理 | 保留，并加强 server/Docker 长期运行能力 |
+| 多端点轮换 | 支持基础轮换 | 支持请求级 fallback、冷却、健康检查和自动回切 |
+| 默认端点切换 | 失败后更偏全局轮换 | 请求失败优先局部处理，必要时才切全局当前端点 |
+| Claude 优先 | 依赖端点顺序 | 通过优先级 + `auto_return` 实现 Claude 恢复后快速切回 |
+| GPT 备用 | 可作为普通端点 | 明确作为 Claude 不可用时的后备端点使用 |
+| 流式请求 | 基础 SSE 转发 | 强化完成事件、断流处理、失败事件和 `[DONE]` 输出 |
+| 上游只支持流式 | 支持有限 | 支持端点级强制流式，并兼容非流式客户端 |
+| OpenAI Responses | 基础兼容 | 重点增强 Codex/Responses SSE、usage、completion 和错误处理 |
+| 空响应处理 | 主要看 HTTP 状态 | 会检查响应是否有有效语义输出 |
+| 健康检查 | 较弱或依赖请求触发 | 后台探测失败端点和高优先级端点，支持即时唤醒 |
+| 恢复策略 | 恢复后的行为不够细 | 支持 `deprioritize` 和 `auto_return` 两种策略 |
+| 端点改名 | Web UI 修改名称存在问题 | 已修复，并同步关联表引用 |
+| 运行状态 | 基础统计 | 增加 runtime 状态、最近成功/失败、失败原因和状态码 |
+| Token Pool | 保留原有能力 | 加强失败隔离、刷新、额度/用量统计路径 |
+| 模型管理 | 基础模型配置 | 支持拉取模型、端点模型覆盖和协议适配 |
+| UI 配置 | 基础端点配置 | 增加强制流式、端点能力、上游偏好、冷却和恢复策略配置 |
+| 日志排查 | 基础日志 | 增加结构化上下文，便于定位请求和切换原因 |
 
-- **统一 API Provider**：Claude Code、Codex CLI、Hermes Agent、OpenClaw、OpenAI Chat/Responses 兼容客户端都可以接入同一个本地地址
-- **多客户端热切换**：把 Hermes、OpenClaw、Codex、Claude Code 的 provider/base URL 都指向 ccNexus 后，在 ccNexus 中切换当前端点、启停端点或调整优先级，客户端即可无感切到新的上游、账号或模型
-- **API 资源管理**：集中管理端点、模型、API Key、Token Pool、额度快照、用量统计和备份数据
-- **多端点轮换与故障转移**：按顺序轮换可用端点，失败自动跳过并切换，降低单个上游异常对工作流的影响
-- **多协议格式转换**：支持 Claude、OpenAI Chat、OpenAI Responses、Gemini、DeepSeek、Kimi/Moonshot 等格式互转
-- **Codex Token Pool**：批量导入 `access_token/refresh_token`，自动轮换、401 后刷新、失效隔离，并固定适配 ChatGPT Codex 后端
-- **Token Pool 额度与用量统计**：捕获 Codex 额度快照，按单条凭证展示请求数、错误数、Token 用量和最近使用状态
-- **端点级推理控制**：为支持的端点配置 `low` / `medium` / `high` / `xhigh` 推理强度，也可显式关闭上游 thinking
-- **上游强制流式兼容**：当上游拒绝非流式请求时，可强制使用流式上游并为非流式客户端聚合结果
-- **模型聚合与兼容接口**：提供 `/v1/models`、`/models`、`/api/tags`、`/version`、`/props`、`/health`、`/stats` 等接口，便于客户端探测和监控
-- **实时统计与可视化**：事件驱动更新，支持今日/昨日/本周/本月快速切换，并可按端点、凭证维度查看
-- **桌面端 + 服务器端**：Wails 桌面应用适合本机使用，`cmd/server` 无头模式适合服务器、NAS 或 Docker 部署
-- **备份同步**：支持 WebDAV、本地备份和 S3 兼容存储，便于多设备迁移配置与统计数据
+## 当前分支重点
 
-## 与初代版本的设计取舍
+这个分支的目标配置是：
 
-Optimized 版本延续了 [lich0821/ccNexus](https://github.com/lich0821/ccNexus) 初代项目“本地统一代理入口”的核心思路，但把重点从简单轮换扩展到长期运行、多端点并发和复杂上游错误恢复。初代逻辑更直接，适合轻量场景；Optimized 版本更强调韧性、可观测性和 Codex/Responses 兼容。
+1. 优先使用 Claude。
+2. Claude 不可用时切到 GPT。
+3. Claude 恢复后自动快速切回。
+4. 对所有关键请求尽量保持流式链路稳定。
+5. Web UI 可以直接管理端点名称、能力、强制流式和恢复策略。
 
-| 维度 | 初代版本优势 | Optimized 版本增强 |
-|------|--------------|--------------------|
-| 故障切换模型 | 失败后全局轮换端点，行为直观，排查简单 | 单次请求内 fallback，不轻易改变全局默认端点，并发请求互不污染 |
-| 错误识别 | 策略简单，维护成本低 | 区分额度耗尽、限流、上游 5xx、网络异常、API Key 失效、客户端 invalid request 等场景 |
-| 端点恢复 | 没有额外状态，结果容易预测 | 失败端点进入可配置冷却，恢复后可自动返回或降优先级，减少反复打坏端点 |
-| 流式稳定性 | 实现简洁，接近传统 HTTP 代理行为 | 支持 SSE heartbeat、上游强制流式、流式错误分类和 200 但空输出的语义检测 |
-| 运维可见性 | 基础日志和统计 | Request ID、重试次数、失败原因、端点运行态与凭证级用量/额度快照 |
+## 验证过的内容
 
-如果只需要一个简单的本地轮换代理，初代设计非常清爽；如果要把 Claude Code、Codex CLI、Hermes Agent、OpenClaw、Token Pool 和多个第三方上游长期放在一起跑，并在这些客户端之间共享同一个可热切换的 API Provider，Optimized 版本提供了更细的隔离、恢复和观测能力。
-
-## 客户端兼容状态
-
-| 客户端 | 推荐接入方式 | 当前状态 |
-|--------|--------------|----------|
-| Claude Code | Claude / Anthropic 兼容入口 | 稳定支持 |
-| Codex CLI | OpenAI Responses API，推荐 `openai2` 转换器 | 稳定支持 |
-| Hermes Agent | 按其客户端协议选择 Claude 或 OpenAI 兼容入口 | 稳定支持 |
-| OpenClaw | Claude 或 OpenAI 兼容入口 | 稳定支持 |
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/images/CN-Light.png" alt="明亮主题" width="400"></td>
-    <td align="center"><img src="docs/images/CN-Dark.png" alt="暗黑主题" width="400"></td>
-  </tr>
-</table>
-
-## 快速开始
-
-### 1. 下载安装
-
-[下载当前 fork 最新版本](https://github.com/jackychanisnotme/ccNexus/releases/latest)
-
-- **macOS**：下载 `.zip` 后解压，将 `ccNexus.app` 移动到「应用程序」，首次运行右键点击 → 打开
-- **Windows**：下载 `windows-amd64.zip` 后解压，运行 `ccNexus.exe`
-- **Linux**：可从源码构建，或使用服务器模式/Docker 部署
-- **服务器模式**：`cd cmd/server && go run main.go`
-
-### 2. 添加端点
-
-点击「添加端点」，填写 API 地址、密钥、认证方式、转换器和目标模型。
-
-常用转换器：
-- `claude`：Claude / Anthropic 兼容接口
-- `openai`：OpenAI Chat Completions 兼容接口
-- `openai2`：OpenAI Responses API，推荐给 Codex CLI
-- `gemini`：Google Gemini
-- `deepseek`：DeepSeek Chat 兼容接口
-- `kimi`：Kimi / Moonshot 兼容接口
-
-如需使用 Codex Token Pool：
-- 认证方式选择 `Codex Token Pool`
-- 在 Token Pool 页面导入一批 token JSON（支持 `access_token` + `refresh_token`）
-- 系统会自动设置上游地址与 `openai2` 转换器，并处理 token 轮换、401 后刷新、额度快照和状态管理
-
-可选增强：
-- 对支持 reasoning 的端点启用「推理」，选择推理强度
-- 上游只接受流式时，启用「上游强制流式」
-- 点击模型选择旁的拉取按钮，快速获取上游模型列表
-
-### 3. 配置客户端
-
-#### Claude Code
-`~/.claude/settings.json`
-```json
-{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "随便写，不重要",
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3000",
-    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000", // 有些模型可能不支持 64k
-  }
-  // 其他配置
-}
-
-```
-
-#### Codex CLI
-推荐使用 Responses API：
-```toml
-model_provider = "ccNexus"
-model = "gpt-5-codex"
-preferred_auth_method = "apikey"
-
-[model_providers.ccNexus]
-name = "ccNexus"
-base_url = "http://localhost:3000/v1"
-wire_api = "responses"  # 或 "chat"
-
-# 其他配置
-```
-
-`~/.codex/auth.json` 可以忽略，认证由 ccNexus 端点或 Token Pool 负责。
-
-## 运行模式
-
-| 模式 | 入口 | 适合场景 |
-|------|------|----------|
-| 桌面模式 | `cmd/desktop` | 本机 GUI、托盘运行、可视化端点和 Token Pool 管理 |
-| 服务器模式 | `cmd/server` | 远程服务器、NAS、Docker、无头 API 代理 |
-
-服务器模式支持 `CCNEXUS_PORT`、`CCNEXUS_LOG_LEVEL`、`CCNEXUS_DB_PATH`、`CCNEXUS_DATA_DIR`、`CCNEXUS_BASIC_AUTH_USERNAME`、`CCNEXUS_BASIC_AUTH_PASSWORD` 等环境变量。
-
-## 文档
-
-- [详细配置](docs/configuration.md)
-- [开发指南](docs/development.md)
-- [常见问题](docs/FAQ.md)
+- `go test ./internal/proxy ./internal/storage ./cmd/server/webui/api -count=1`
+- `go build -o /tmp/ccnexus-server-audit ./cmd/server`
+- Docker server 模式运行正常
+- 流式 `/v1/responses` 返回 `response.completed` 和 `[DONE]`
+- 手动切到 GPT 后可自动回切 Claude
+- Web UI 端点改名 API 可正常更新并保留密钥
 
 ## 许可证
 
-[MIT](LICENSE)
+沿用原项目许可证，见 [LICENSE](LICENSE)。

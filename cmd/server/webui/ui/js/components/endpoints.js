@@ -1,7 +1,7 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
-import { getTransformerLabel, getStatusBadge } from '../utils/formatters.js';
+import { getTransformerLabel } from '../utils/formatters.js';
 import { t } from '../utils/i18n.js';
 
 class Endpoints {
@@ -111,7 +111,10 @@ class Endpoints {
         let testStatusIcon = '⚠️';
         let testStatusTitle = t('endpoints.notTested');
 
-        if (testStatus === true) {
+        if (ep.available === false) {
+            testStatusIcon = '❌';
+            testStatusTitle = this.getAvailabilityTitle(ep);
+        } else if (testStatus === true) {
             testStatusIcon = '✅';
             testStatusTitle = t('endpoints.testPassed');
         } else if (testStatus === false) {
@@ -136,10 +139,10 @@ class Endpoints {
                 <td>${getTransformerLabel(ep.transformer)}${ep.autoSelect ? ` <span class="badge badge-primary">${t('endpoints.autoSelectShort')}</span>` : ''}</td>
                 <td>${this.escapeHtml(ep.model || '-')}</td>
                 <td>${this.renderTokenPoolSummary(this.tokenPools[ep.name])}</td>
-                <td>${getStatusBadge(ep.enabled)}</td>
+                <td>${this.renderEndpointStatus(ep)}</td>
                 <td>
                     <div class="flex gap-2">
-                        ${ep.enabled && !isCurrentEndpoint ? `
+                        ${ep.enabled && ep.available !== false && !isCurrentEndpoint ? `
                             <button class="btn btn-sm btn-secondary switch-btn" data-name="${this.escapeHtml(ep.name)}" title="${t('endpoints.switchToEndpoint')}">
                                 ${t('common.switch')}
                             </button>
@@ -167,6 +170,65 @@ class Endpoints {
                 </td>
             </tr>
         `;
+    }
+
+    renderEndpointStatus(ep) {
+        const enabledBadge = ep.enabled
+            ? `<span class="badge badge-info">${t('common.enabled')}</span>`
+            : `<span class="badge badge-danger">${t('common.disabled')}</span>`;
+        if (!ep.enabled) {
+            return `<div class="status-stack">${enabledBadge}</div>`;
+        }
+
+        const availability = ep.availability || (ep.available === false ? 'unavailable' : 'available');
+        if (availability === 'unavailable' || ep.available === false) {
+            const title = this.getAvailabilityTitle(ep);
+            return `
+                <div class="status-stack" title="${this.escapeHtml(title)}">
+                    ${enabledBadge}
+                    <span class="badge badge-danger">${t('endpoints.unavailable')}</span>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="status-stack">
+                ${enabledBadge}
+                <span class="badge badge-success">${t('endpoints.available')}</span>
+            </div>
+        `;
+    }
+
+    getAvailabilityTitle(ep) {
+        const reason = this.formatAvailabilityReason(ep.availabilityReason);
+        const code = ep.availabilityStatusCode ? `HTTP ${ep.availabilityStatusCode}` : '';
+        const lastFailureAt = ep.runtimeStatus?.lastFailureAt ? new Date(ep.runtimeStatus.lastFailureAt).toLocaleString() : '';
+        const parts = [reason, code, lastFailureAt].filter(Boolean);
+        return parts.length > 0 ? parts.join(' · ') : t('endpoints.unavailable');
+    }
+
+    formatAvailabilityReason(reason) {
+        const normalized = (reason || '').trim();
+        const labels = {
+            quota_exhausted: t('endpoints.reasonQuotaExhausted'),
+            rate_limited: t('endpoints.reasonRateLimited'),
+            upstream_5xx: t('endpoints.reasonUpstreamError'),
+            retryable_status: t('endpoints.reasonUpstreamError'),
+            upstream_stream_error: t('endpoints.reasonStreamError'),
+            streaming_failed: t('endpoints.reasonStreamError'),
+            aggregate_streaming_failed: t('endpoints.reasonStreamError'),
+            send_request_failed: t('endpoints.reasonNetworkError'),
+            transient_network_error: t('endpoints.reasonNetworkError'),
+            transport_protocol_error: t('endpoints.reasonNetworkError'),
+            endpoint_auth_failed: t('endpoints.reasonAuthFailed'),
+            credential_select_failed: t('endpoints.reasonTokenUnavailable'),
+            no_usable_token: t('endpoints.reasonTokenUnavailable'),
+            credential_refresh_failed: t('endpoints.reasonTokenUnavailable'),
+            empty_api_key: t('endpoints.reasonConfigError'),
+            prepare_transformer_failed: t('endpoints.reasonConfigError'),
+            build_request_failed: t('endpoints.reasonConfigError')
+        };
+        return labels[normalized] || normalized || t('endpoints.unavailable');
     }
 
     renderTokenPoolSummary(pool) {

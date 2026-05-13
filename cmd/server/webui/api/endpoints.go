@@ -12,6 +12,15 @@ import (
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
+type endpointResponse struct {
+	storage.Endpoint
+	RuntimeStatus          *storage.EndpointRuntimeStatus `json:"runtimeStatus,omitempty"`
+	Available              bool                           `json:"available"`
+	Availability           string                         `json:"availability"`
+	AvailabilityReason     string                         `json:"availabilityReason,omitempty"`
+	AvailabilityStatusCode int                            `json:"availabilityStatusCode,omitempty"`
+}
+
 // handleEndpoints handles GET (list) and POST (create) for endpoints
 func (h *Handler) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -72,9 +81,16 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mask API keys
+	runtimeStatuses, err := h.storage.GetEndpointRuntimeStatuses()
+	if err != nil {
+		logger.Warn("Failed to get endpoint runtime statuses: %v", err)
+		runtimeStatuses = map[string]*storage.EndpointRuntimeStatus{}
+	}
+
+	items := make([]endpointResponse, 0, len(endpoints))
 	for i := range endpoints {
 		endpoints[i].APIKey = maskAPIKey(endpoints[i].APIKey)
+		items = append(items, buildEndpointResponse(endpoints[i], runtimeStatuses[endpoints[i].Name]))
 	}
 
 	tokenPools, err := h.storage.GetAllTokenPoolStats()
@@ -84,7 +100,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteSuccess(w, map[string]interface{}{
-		"endpoints":  endpoints,
+		"endpoints":  items,
 		"tokenPools": tokenPools,
 	})
 }
@@ -100,13 +116,43 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 
 	for _, ep := range endpoints {
 		if ep.Name == name {
+			runtimeStatuses, err := h.storage.GetEndpointRuntimeStatuses()
+			if err != nil {
+				logger.Warn("Failed to get endpoint runtime statuses: %v", err)
+				runtimeStatuses = map[string]*storage.EndpointRuntimeStatus{}
+			}
 			ep.APIKey = maskAPIKey(ep.APIKey)
-			WriteSuccess(w, ep)
+			WriteSuccess(w, buildEndpointResponse(ep, runtimeStatuses[ep.Name]))
 			return
 		}
 	}
 
 	WriteError(w, http.StatusNotFound, "Endpoint not found")
+}
+
+func buildEndpointResponse(endpoint storage.Endpoint, status *storage.EndpointRuntimeStatus) endpointResponse {
+	available, availability, reason, statusCode := deriveEndpointAvailability(endpoint.Enabled, status)
+	return endpointResponse{
+		Endpoint:               endpoint,
+		RuntimeStatus:          status,
+		Available:              available,
+		Availability:           availability,
+		AvailabilityReason:     reason,
+		AvailabilityStatusCode: statusCode,
+	}
+}
+
+func deriveEndpointAvailability(enabled bool, status *storage.EndpointRuntimeStatus) (bool, string, string, int) {
+	if !enabled {
+		return false, "disabled", "", 0
+	}
+	if status == nil || strings.TrimSpace(status.LastFailureReason) == "" || status.LastFailureAt == nil {
+		return true, "available", "", 0
+	}
+	if status.LastSuccessAt != nil && status.LastSuccessAt.After(*status.LastFailureAt) {
+		return true, "available", "", 0
+	}
+	return false, "unavailable", strings.TrimSpace(status.LastFailureReason), status.LastFailureStatusCode
 }
 
 // createEndpoint creates a new endpoint

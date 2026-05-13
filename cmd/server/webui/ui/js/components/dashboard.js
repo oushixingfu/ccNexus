@@ -121,16 +121,23 @@ class Dashboard {
                         </tr>
                     </thead>
                     <tbody>
-                        ${enabledEndpoints.map(ep => `
+                        ${enabledEndpoints.map(ep => {
+                            const available = ep.available !== false;
+                            const badgeClass = available ? 'badge-success' : 'badge-danger';
+                            const indicatorClass = available ? 'online' : 'offline';
+                            const label = available ? t('endpoints.available') : t('endpoints.unavailable');
+                            const reason = !available && ep.availabilityReason ? ` (${this.escapeHtml(ep.availabilityReason)})` : '';
+                            return `
                             <tr>
                                 <td>${this.escapeHtml(ep.name)}</td>
                                 <td>${this.escapeHtml(ep.transformer)}</td>
                                 <td>
-                                    <span class="status-indicator online"></span>
-                                    <span class="badge badge-success">${t('common.active')}</span>
+                                    <span class="status-indicator ${indicatorClass}"></span>
+                                    <span class="badge ${badgeClass}">${label}${reason}</span>
                                 </td>
                             </tr>
-                        `).join('')}
+                            `;
+                        }).join('')}
                     </tbody>
                 </table>
             </div>

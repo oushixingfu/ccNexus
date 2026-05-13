@@ -121,6 +121,13 @@
     color: #1e40af;
 }
 
+.status-stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    align-items: center;
+}
+
 /* Status indicators */
 .status-indicator {
     display: inline-block;

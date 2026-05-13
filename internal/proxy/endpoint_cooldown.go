@@ -233,7 +233,24 @@ func (p *Proxy) markEndpointHealthCheckCooldown(endpointName string, reason stri
 
 func shouldDeferHealthCheckForCooldownReason(reason string) bool {
 	switch sanitizeLogField(reason) {
-	case "quota_exhausted", "rate_limited":
+	case "quota_exhausted",
+		"rate_limited",
+		"upstream_5xx",
+		"retryable_status",
+		"upstream_stream_error",
+		"streaming_failed",
+		"aggregate_streaming_failed",
+		retryReasonSemanticEmptyResponse,
+		"send_request_failed",
+		"transient_network_error",
+		retryReasonTransportProtocol,
+		"credential_select_failed",
+		"no_usable_token",
+		"credential_refresh_failed",
+		retryReasonEndpointAuthFailed,
+		"empty_api_key",
+		"prepare_transformer_failed",
+		"build_request_failed":
 		return true
 	default:
 		return false

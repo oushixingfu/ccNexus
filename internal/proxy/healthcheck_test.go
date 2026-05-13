@@ -401,6 +401,34 @@ func TestExpiredQuotaProbeFailureRenewsCooldown(t *testing.T) {
 	}
 }
 
+func TestHealthCheckDefersActiveUpstreamCooldown(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", upstream.URL),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}, upstream.Client())
+
+	p.markEndpointCooldown("A", "upstream_5xx", time.Hour, requestObservability{RequestID: "upstream-cooldown"}, 1)
+	p.registerForHealthCheck("A")
+	p.runHealthCheckRound()
+
+	if hits != 0 {
+		t.Fatalf("expected active upstream cooldown to defer health probe, got hits=%d", hits)
+	}
+	cooldown, ok := p.endpointCooldown("A")
+	if !ok || !cooldown.Until.After(time.Now()) || cooldown.Reason != "upstream_5xx" {
+		t.Fatalf("expected upstream cooldown to remain active, got cooldown=%#v ok=%t", cooldown, ok)
+	}
+}
+
 func TestQuotaBlockedHealthProbeKeepsBlockOnDifferentFailure(t *testing.T) {
 	unavailableUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

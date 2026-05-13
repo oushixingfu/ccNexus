@@ -94,6 +94,8 @@ func TestConfigIdentityChangeClearsOnlyChangedEndpointCooldown(t *testing.T) {
 
 	p.markEndpointCooldown("A", "quota_exhausted", 10*time.Minute, requestObservability{RequestID: "req-cooldown-a"}, 1)
 	p.markEndpointCooldown("B", "quota_exhausted", 10*time.Minute, requestObservability{RequestID: "req-cooldown-b"}, 1)
+	p.setRuntimeBlockedEndpoint("A", "quota_exhausted")
+	p.setRuntimeBlockedEndpoint("B", "quota_exhausted")
 	currentName := p.GetCurrentEndpointName()
 
 	changedA := failoverPolicyTestEndpoint("A", "https://a-new.example")
@@ -114,6 +116,13 @@ func TestConfigIdentityChangeClearsOnlyChangedEndpointCooldown(t *testing.T) {
 	}
 	if !bCooled {
 		t.Fatal("expected unchanged endpoint B cooldown to remain")
+	}
+	blocked := p.snapshotRuntimeBlockedEndpoints()
+	if _, ok := blocked["A"]; ok {
+		t.Fatal("expected identity-changing endpoint update to clear A runtime block")
+	}
+	if _, ok := blocked["B"]; !ok {
+		t.Fatal("expected unchanged endpoint B runtime block to remain")
 	}
 }
 
@@ -210,6 +219,35 @@ func TestRequestPlanAutoReturnsRecoveredCurrentEndpoint(t *testing.T) {
 	}
 }
 
+func TestRequestPlanSkipsRuntimeBlockedQuotaEndpoint(t *testing.T) {
+	endpoints := []config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+		failoverPolicyTestEndpoint("C", "https://c.example"),
+	}
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints(endpoints)
+	cfg.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+	p.setRuntimeBlockedEndpoint("A", "quota_exhausted")
+	p.cooldownMu.Lock()
+	p.endpointCooldowns["A"] = endpointCooldown{Reason: "quota_exhausted", Until: time.Now().Add(-time.Second)}
+	p.cooldownMu.Unlock()
+
+	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-runtime-blocked"})
+	plan := newRequestEndpointPlanForCurrentWithSkip(available, endpoints, p.GetCurrentEndpointName(), p.isEndpointDeprioritized(p.GetCurrentEndpointName()))
+	if got := plan.Current().Name; got != "B" {
+		t.Fatalf("expected runtime-blocked quota endpoint A to be skipped, got %q", got)
+	}
+	if got := plan.Advance().Name; got != "C" {
+		t.Fatalf("expected C after B, got %q", got)
+	}
+	if got := plan.Advance().Name; got != "B" {
+		t.Fatalf("expected blocked A to stay out of the request plan, got %q", got)
+	}
+}
+
 func TestManualSwitchClearsEndpointCooldown(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
@@ -227,6 +265,24 @@ func TestManualSwitchClearsEndpointCooldown(t *testing.T) {
 	p.cooldownMu.RUnlock()
 	if stillCooled {
 		t.Fatal("expected manual switch to clear endpoint cooldown")
+	}
+}
+
+func TestManualSwitchClearsRuntimeBlock(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	})
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+	p.setRuntimeBlockedEndpoint("B", "quota_exhausted")
+
+	if err := p.SetCurrentEndpoint("B"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+	blocked := p.snapshotRuntimeBlockedEndpoints()
+	if _, ok := blocked["B"]; ok {
+		t.Fatal("expected manual switch to clear runtime block")
 	}
 }
 

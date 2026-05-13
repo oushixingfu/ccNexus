@@ -63,6 +63,69 @@ func (p *Proxy) upsertEndpointRuntimeStatus(endpointName string, patch storage.E
 	return status
 }
 
+func (p *Proxy) setRuntimeBlockedEndpoint(endpointName string, reason string) {
+	if p == nil || strings.TrimSpace(endpointName) == "" || !shouldBlockHealthCheckRecoveryReason(reason) {
+		return
+	}
+
+	p.runtimeBlockedMu.Lock()
+	if p.runtimeBlockedEndpoints == nil {
+		p.runtimeBlockedEndpoints = make(map[string]string)
+	}
+	p.runtimeBlockedEndpoints[endpointName] = sanitizeLogField(reason)
+	p.runtimeBlockedMu.Unlock()
+}
+
+func (p *Proxy) clearRuntimeBlockedEndpoint(endpointName string) {
+	if p == nil || strings.TrimSpace(endpointName) == "" {
+		return
+	}
+
+	p.runtimeBlockedMu.Lock()
+	delete(p.runtimeBlockedEndpoints, endpointName)
+	p.runtimeBlockedMu.Unlock()
+}
+
+func (p *Proxy) clearRuntimeBlockedEndpoints(endpointNames []string) {
+	if p == nil || len(endpointNames) == 0 {
+		return
+	}
+
+	p.runtimeBlockedMu.Lock()
+	for _, name := range endpointNames {
+		delete(p.runtimeBlockedEndpoints, name)
+	}
+	p.runtimeBlockedMu.Unlock()
+}
+
+func (p *Proxy) snapshotRuntimeBlockedEndpoints() map[string]string {
+	if p == nil {
+		return nil
+	}
+
+	p.runtimeBlockedMu.RLock()
+	defer p.runtimeBlockedMu.RUnlock()
+	if len(p.runtimeBlockedEndpoints) == 0 {
+		return nil
+	}
+
+	blocked := make(map[string]string, len(p.runtimeBlockedEndpoints))
+	for name, reason := range p.runtimeBlockedEndpoints {
+		blocked[name] = reason
+	}
+	return blocked
+}
+
+func (p *Proxy) runtimeBlockedReason(endpointName string) string {
+	if p == nil || strings.TrimSpace(endpointName) == "" {
+		return ""
+	}
+
+	p.runtimeBlockedMu.RLock()
+	defer p.runtimeBlockedMu.RUnlock()
+	return p.runtimeBlockedEndpoints[endpointName]
+}
+
 func (p *Proxy) recordEndpointAttempt(endpointName string) *storage.EndpointRuntimeStatus {
 	now := time.Now().UTC()
 	status := p.upsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
@@ -76,8 +139,13 @@ func (p *Proxy) recordEndpointAttempt(endpointName string) *storage.EndpointRunt
 
 func (p *Proxy) recordEndpointSuccess(endpointName string) *storage.EndpointRuntimeStatus {
 	now := time.Now().UTC()
+	clearedFailureReason := ""
+	clearedFailureStatusCode := 0
+	p.clearRuntimeBlockedEndpoint(endpointName)
 	status := p.upsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
-		LastSuccessAt: &now,
+		LastSuccessAt:         &now,
+		LastFailureReason:     &clearedFailureReason,
+		LastFailureStatusCode: &clearedFailureStatusCode,
 	})
 	if status == nil {
 		status = &storage.EndpointRuntimeStatus{EndpointName: endpointName, LastSuccessAt: &now, UpdatedAt: now}
@@ -96,6 +164,11 @@ func (p *Proxy) recordEndpointFailure(endpointName, reason string, statusCodes .
 	now := time.Now().UTC()
 	cleanReason := sanitizeLogField(reason)
 	statusCode := endpointFailureStatusCode(statusCodes)
+	if shouldBlockHealthCheckRecoveryReason(cleanReason) {
+		p.setRuntimeBlockedEndpoint(endpointName, cleanReason)
+	} else {
+		p.clearRuntimeBlockedEndpoint(endpointName)
+	}
 	status := p.upsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
 		LastFailureAt:         &now,
 		LastFailureReason:     &cleanReason,

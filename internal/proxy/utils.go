@@ -219,7 +219,10 @@ func isRateLimitedHTTPFailure(statusCode int, body string) bool {
 	return strings.Contains(lower, "too many requests") ||
 		strings.Contains(lower, "rate limit") ||
 		strings.Contains(lower, "rate_limit") ||
-		strings.Contains(lower, "429")
+		strings.Contains(lower, "status 429") ||
+		strings.Contains(lower, "http 429") ||
+		strings.Contains(lower, `"status":429`) ||
+		strings.Contains(lower, `"code":429`)
 }
 
 func shouldTreatAPIKeyEndpointAuthFailure(authMode string, statusCode int, body string) bool {

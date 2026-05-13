@@ -26,6 +26,8 @@ type healthCheckResult struct {
 	EndpointName string
 	Success      bool
 	StatusCode   int
+	Headers      http.Header
+	Reason       string
 	Error        string
 }
 
@@ -110,10 +112,58 @@ func (p *Proxy) seedHealthCheckWatchSet() {
 		if status == nil || status.LastFailureAt == nil {
 			continue
 		}
-		if status.LastSuccessAt == nil || status.LastFailureAt.After(*status.LastSuccessAt) {
+		if shouldBlockHealthCheckRecoveryReason(status.LastFailureReason) {
+			p.setRuntimeBlockedEndpoint(name, status.LastFailureReason)
+			p.restoreEndpointCooldownFromRuntimeStatus(name, status.LastFailureReason, *status.LastFailureAt)
+			if currentName := p.GetCurrentEndpointName(); currentName == name {
+				if endpoint := p.findEnabledEndpoint(name); endpoint != nil {
+					p.switchCurrentEndpointAfterFailure(*endpoint, status.LastFailureReason, requestObservability{RequestID: "healthcheck_seed"}, 0)
+				}
+			}
+			p.registerForHealthCheck(name)
+			continue
+		}
+		failureAfterSuccess := status.LastSuccessAt == nil || status.LastFailureAt.After(*status.LastSuccessAt)
+		restoredCooldown := false
+		if failureAfterSuccess || shouldRestoreDeferredCooldown(status.LastFailureReason, *status.LastFailureAt, p.cooldownDurationForReason(status.LastFailureReason, nil)) {
+			restoredCooldown = p.restoreEndpointCooldownFromRuntimeStatus(name, status.LastFailureReason, *status.LastFailureAt)
+		}
+		if restoredCooldown || failureAfterSuccess {
 			p.registerForHealthCheck(name)
 		}
 	}
+}
+
+func (p *Proxy) restoreEndpointCooldownFromRuntimeStatus(endpointName string, reason string, lastFailureAt time.Time) bool {
+	duration := p.cooldownDurationForReason(reason, nil)
+	if duration <= 0 || lastFailureAt.IsZero() {
+		return false
+	}
+
+	until := lastFailureAt.Add(duration)
+	if !until.After(time.Now()) {
+		return false
+	}
+
+	p.setEndpointCooldownUntil(endpointName, reason, until)
+	if currentName := p.GetCurrentEndpointName(); currentName == endpointName {
+		if endpoint := p.findEnabledEndpoint(endpointName); endpoint != nil {
+			p.switchCurrentEndpointAfterFailure(*endpoint, reason, requestObservability{RequestID: "healthcheck_seed"}, 0)
+		}
+	}
+	logger.Debug("[HEALTHCHECK] Restored cooldown for %s until=%s cooldown_reason=%s",
+		endpointName,
+		until.Format(time.RFC3339),
+		sanitizeLogField(reason),
+	)
+	return true
+}
+
+func shouldRestoreDeferredCooldown(reason string, lastFailureAt time.Time, duration time.Duration) bool {
+	if !shouldDeferHealthCheckForCooldownReason(reason) || duration <= 0 || lastFailureAt.IsZero() {
+		return false
+	}
+	return lastFailureAt.Add(duration).After(time.Now())
 }
 
 func (p *Proxy) watchPreferredEndpointsForAutoReturn(currentName string) {
@@ -122,7 +172,9 @@ func (p *Proxy) watchPreferredEndpointsForAutoReturn(currentName string) {
 		return
 	}
 	for _, endpoint := range p.getEnabledEndpoints() {
-		if endpoint.Name != currentName && p.shouldPreferEndpoint(endpoint.Name, currentName) {
+		if endpoint.Name != currentName &&
+			p.shouldPreferEndpoint(endpoint.Name, currentName) &&
+			!p.hasBlockedHealthCheckRecoveryFailure(endpoint.Name) {
 			p.registerForHealthCheck(endpoint.Name)
 		}
 	}
@@ -193,6 +245,9 @@ func (p *Proxy) runHealthCheckRound() {
 			p.unregisterFromHealthCheck(name)
 			continue
 		}
+		if p.shouldDeferHealthCheckForActiveCooldown(name) {
+			continue
+		}
 
 		result := p.probeEndpointHealth(endpoint)
 		if result.Success {
@@ -216,9 +271,67 @@ func (p *Proxy) runHealthCheckRound() {
 				}
 			}
 		} else if result.Error != "" {
+			p.recordHealthCheckFailure(result)
 			logger.Warn("[HEALTHCHECK] Endpoint %s still unhealthy (status=%d): %s", name, result.StatusCode, result.Error)
 		}
 	}
+}
+
+func (p *Proxy) recordHealthCheckFailure(result healthCheckResult) {
+	if result.EndpointName == "" || result.Reason == "" {
+		return
+	}
+
+	reason := result.Reason
+	if blockedReason := p.runtimeBlockedReason(result.EndpointName); shouldBlockHealthCheckRecoveryReason(blockedReason) {
+		reason = blockedReason
+	}
+
+	status := p.recordEndpointFailure(result.EndpointName, reason, result.StatusCode)
+	p.emitEndpointRuntimeEvent(result.EndpointName, "failure", status)
+	p.markEndpointHealthCheckCooldown(result.EndpointName, reason, result.Headers)
+}
+
+func (p *Proxy) hasBlockedHealthCheckRecoveryFailure(endpointName string) bool {
+	if p == nil || p.storage == nil || strings.TrimSpace(endpointName) == "" {
+		blocked := p.snapshotRuntimeBlockedEndpoints()
+		_, ok := blocked[endpointName]
+		return ok
+	}
+	blocked := p.snapshotRuntimeBlockedEndpoints()
+	if _, ok := blocked[endpointName]; ok {
+		return true
+	}
+	statuses, err := p.storage.GetEndpointRuntimeStatuses()
+	if err != nil {
+		logger.Warn("[HEALTHCHECK] Failed to load runtime status for %s: %v", endpointName, err)
+		return false
+	}
+	status := statuses[endpointName]
+	if status == nil {
+		return false
+	}
+	if shouldBlockHealthCheckRecoveryReason(status.LastFailureReason) {
+		p.setRuntimeBlockedEndpoint(endpointName, status.LastFailureReason)
+		return true
+	}
+	return false
+}
+
+func (p *Proxy) shouldDeferHealthCheckForActiveCooldown(endpointName string) bool {
+	cooldown, ok := p.endpointCooldown(endpointName)
+	if !ok || !cooldown.Until.After(time.Now()) {
+		return false
+	}
+	if !shouldDeferHealthCheckForCooldownReason(cooldown.Reason) {
+		return false
+	}
+	logger.Debug("[HEALTHCHECK] Deferring probe for cooled endpoint %s remaining=%s cooldown_reason=%s",
+		endpointName,
+		time.Until(cooldown.Until).Round(time.Millisecond),
+		sanitizeLogField(cooldown.Reason),
+	)
+	return true
 }
 
 // copyWatchedEndpoints returns a snapshot of the current health check watch set.
@@ -293,6 +406,7 @@ func (p *Proxy) probeEndpointHealth(endpoint *config.Endpoint) healthCheckResult
 		return result
 	}
 	defer resp.Body.Close()
+	result.Headers = resp.Header.Clone()
 
 	expectEventStream := p.healthCheckExpectsEventStream(endpoint, resp.Header.Get("Content-Type"))
 	body, readErr := readHealthCheckResponseBody(resp.Body, expectEventStream)
@@ -309,6 +423,7 @@ func (p *Proxy) probeEndpointHealth(endpoint *config.Endpoint) healthCheckResult
 		}
 		result.Success = true
 	} else {
+		result.Reason = retryReasonForHTTPStatus(resp.StatusCode, string(body))
 		result.Error = fmt.Sprintf("status %d: %s", resp.StatusCode, providercompat.TruncateErrorBody(string(body)))
 	}
 	return result

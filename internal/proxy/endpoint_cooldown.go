@@ -14,11 +14,10 @@ type endpointCooldown struct {
 	Until  time.Time
 }
 
-func (p *Proxy) markEndpointCooldown(endpointName string, reason string, duration time.Duration, obs requestObservability, attemptNumber int) {
-	if endpointName == "" || duration <= 0 {
+func (p *Proxy) setEndpointCooldownUntil(endpointName string, reason string, until time.Time) {
+	if strings.TrimSpace(endpointName) == "" || until.IsZero() || !until.After(time.Now()) {
 		return
 	}
-	until := time.Now().Add(duration)
 
 	p.cooldownMu.Lock()
 	if p.endpointCooldowns == nil {
@@ -26,6 +25,25 @@ func (p *Proxy) markEndpointCooldown(endpointName string, reason string, duratio
 	}
 	p.endpointCooldowns[endpointName] = endpointCooldown{Reason: sanitizeLogField(reason), Until: until}
 	p.cooldownMu.Unlock()
+}
+
+func (p *Proxy) endpointCooldown(endpointName string) (endpointCooldown, bool) {
+	if strings.TrimSpace(endpointName) == "" {
+		return endpointCooldown{}, false
+	}
+	p.cooldownMu.RLock()
+	defer p.cooldownMu.RUnlock()
+	cooldown, ok := p.endpointCooldowns[endpointName]
+	return cooldown, ok
+}
+
+func (p *Proxy) markEndpointCooldown(endpointName string, reason string, duration time.Duration, obs requestObservability, attemptNumber int) {
+	if endpointName == "" || duration <= 0 {
+		return
+	}
+	until := time.Now().Add(duration)
+
+	p.setEndpointCooldownUntil(endpointName, reason, until)
 
 	logger.Debug("[COOLDOWN] %s cooldown=%s until=%s %s cooldown_reason=%s",
 		endpointName,
@@ -90,6 +108,7 @@ func (p *Proxy) clearEndpointCooldownsForConfigChange(oldEndpoints []config.Endp
 		delete(p.endpointCooldowns, name)
 	}
 	p.cooldownMu.Unlock()
+	p.clearRuntimeBlockedEndpoints(toClear)
 
 	logger.Debug("[CONFIG UPDATE] Cleared endpoint cooldowns for changed endpoints: %v", toClear)
 }
@@ -118,12 +137,23 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 	now := time.Now()
 	available := make([]config.Endpoint, 0, len(endpoints))
 	deprioritized := make([]config.Endpoint, 0)
+	nonBlockedFallback := make([]config.Endpoint, 0, len(endpoints))
+	runtimeBlocked := p.snapshotRuntimeBlockedEndpoints()
 	policy := p.recoveredEndpointPolicy()
 
 	p.cooldownMu.Lock()
 	defer p.cooldownMu.Unlock()
 
 	for _, endpoint := range endpoints {
+		if reason, blocked := runtimeBlocked[endpoint.Name]; blocked {
+			logger.Debug("[COOLDOWN] Skipping runtime-blocked endpoint for request plan: %s %s block_reason=%s",
+				endpoint.Name,
+				requestLogFields(obs, endpoint.Name, 0, 0, reason),
+				sanitizeLogField(reason),
+			)
+			continue
+		}
+		nonBlockedFallback = append(nonBlockedFallback, endpoint)
 		cooldown, ok := p.endpointCooldowns[endpoint.Name]
 		if !ok {
 			available = append(available, endpoint)
@@ -152,6 +182,10 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 	}
 
 	if len(available) == 0 && len(deprioritized) == 0 {
+		if len(nonBlockedFallback) > 0 {
+			logger.Debug("[COOLDOWN] All non-blocked endpoints are cooled; using non-blocked endpoint list %s", requestLogFields(obs, "", 0, 0, "all_non_blocked_endpoints_cooled"))
+			return nonBlockedFallback
+		}
 		logger.Debug("[COOLDOWN] All enabled endpoints are cooled; using full endpoint list %s", requestLogFields(obs, "", 0, 0, "all_endpoints_cooled"))
 		return endpoints
 	}
@@ -186,6 +220,28 @@ func (p *Proxy) markEndpointCooldownForReason(endpointName string, reason string
 	p.markEndpointCooldown(endpointName, reason, duration, obs, attemptNumber)
 	p.registerForHealthCheck(endpointName)
 	return true
+}
+
+func (p *Proxy) markEndpointHealthCheckCooldown(endpointName string, reason string, headers http.Header) bool {
+	duration := p.cooldownDurationForReason(reason, headers)
+	if duration <= 0 {
+		return false
+	}
+	p.markEndpointCooldown(endpointName, reason, duration, requestObservability{RequestID: "healthcheck"}, 0)
+	return true
+}
+
+func shouldDeferHealthCheckForCooldownReason(reason string) bool {
+	switch sanitizeLogField(reason) {
+	case "quota_exhausted", "rate_limited":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldBlockHealthCheckRecoveryReason(reason string) bool {
+	return sanitizeLogField(reason) == "quota_exhausted"
 }
 
 func (p *Proxy) cooldownDurationForReason(reason string, headers http.Header) time.Duration {

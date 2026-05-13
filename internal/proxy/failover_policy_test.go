@@ -440,6 +440,7 @@ func newFailoverPolicyTestProxy(endpoints []config.Endpoint, client *http.Client
 		resolver:                NewEndpointResolverWithFunc(cfg.GetEndpoints),
 		retrySleep:              func(time.Duration) {},
 		endpointCooldowns:       make(map[string]endpointCooldown),
+		runtimeBlockedEndpoints: make(map[string]string),
 	}
 }
 

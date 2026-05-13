@@ -55,6 +55,8 @@ type Proxy struct {
 	retrySleep               func(time.Duration)         // injectable sleep hook for retry backoff tests
 	endpointCooldowns        map[string]endpointCooldown // temporary request-plan skips for deterministic endpoint failures
 	cooldownMu               sync.RWMutex                // protects endpointCooldowns
+	runtimeBlockedEndpoints  map[string]string           // hard request-plan skips for failures that lightweight probes cannot clear
+	runtimeBlockedMu         sync.RWMutex                // protects runtimeBlockedEndpoints
 	streamHeaderTimeout      time.Duration               // injectable response-header timeout for upstream streaming requests
 	streamHeartbeatInterval  time.Duration               // injectable downstream SSE heartbeat interval
 	healthCheckCtx           context.Context             // cancelable context for health check goroutine
@@ -100,6 +102,7 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 		resolver:                NewEndpointResolverWithFunc(cfg.GetEndpoints),
 		retrySleep:              time.Sleep,
 		endpointCooldowns:       make(map[string]endpointCooldown),
+		runtimeBlockedEndpoints: make(map[string]string),
 		healthCheckWatched:      make(map[string]struct{}),
 		healthCheckWake:         make(chan struct{}, 1),
 	}
@@ -391,6 +394,7 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 			if oldEndpoint.Name == ep.Name {
 				p.mu.Unlock()
 				p.clearEndpointCooldown(ep.Name)
+				p.clearRuntimeBlockedEndpoint(ep.Name)
 				p.watchPreferredEndpointsForAutoReturn(ep.Name)
 				return nil
 			}
@@ -399,6 +403,7 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 			p.mu.Unlock()
 			p.persistCurrentEndpoint(ep.Name)
 			p.clearEndpointCooldown(ep.Name)
+			p.clearRuntimeBlockedEndpoint(ep.Name)
 			p.watchPreferredEndpointsForAutoReturn(ep.Name)
 			p.emitCurrentEndpointChanged(oldEndpoint.Name, ep.Name, "manual_switch")
 			return nil

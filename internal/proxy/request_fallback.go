@@ -146,6 +146,13 @@ func (p *Proxy) advanceRequestEndpoint(plan *requestEndpointPlan, from config.En
 	return to
 }
 
+func shouldFailoverAfterSemanticEmpty(useSpecificEndpoint bool, plan *requestEndpointPlan, retry int, maxRetries int) bool {
+	return !useSpecificEndpoint &&
+		plan != nil &&
+		plan.Len() > 1 &&
+		retry+1 < maxRetries
+}
+
 func (p *Proxy) sleepBeforeRetry(d time.Duration) {
 	if d <= 0 {
 		return

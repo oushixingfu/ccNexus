@@ -282,7 +282,7 @@ func TestStreamingSemanticEmptyRetriesAfterDownstreamHeartbeat(t *testing.T) {
 	}
 }
 
-func TestSemanticEmptyDoesNotFallbackToNextEndpoint(t *testing.T) {
+func TestSemanticEmptyFallsBackToNextEndpointAfterRetries(t *testing.T) {
 	var primaryHits int
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		primaryHits++
@@ -319,6 +319,10 @@ func TestSemanticEmptyDoesNotFallbackToNextEndpoint(t *testing.T) {
 	p.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		return http.DefaultTransport.RoundTrip(req)
 	})
+	var runtimeEvents []EndpointRuntimeEvent
+	p.SetOnEndpointRuntimeChanged(func(event EndpointRuntimeEvent) {
+		runtimeEvents = append(runtimeEvents, event)
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -326,11 +330,59 @@ func TestSemanticEmptyDoesNotFallbackToNextEndpoint(t *testing.T) {
 
 	p.handleProxy(rec, req)
 
-	if primaryHits != endpointSlowFailoverAttempts {
-		t.Fatalf("expected primary retries only, got primary hits=%d", primaryHits)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected semantic empty fallback to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if fallbackHits != 0 {
-		t.Fatalf("expected semantic empty not to call fallback endpoint, got fallback hits=%d", fallbackHits)
+	if primaryHits != endpointSlowFailoverAttempts {
+		t.Fatalf("expected primary to be retried %d times before fallback, got primary hits=%d", endpointSlowFailoverAttempts, primaryHits)
+	}
+	if fallbackHits != 1 {
+		t.Fatalf("expected semantic empty to call fallback endpoint once, got fallback hits=%d", fallbackHits)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `response.output_text.delta`) || !strings.Contains(body, "fallback") || strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("expected fallback stream output without terminal failure, got status=%d body=%q", rec.Code, body)
+	}
+	cooldown, cooled := p.endpointCooldown("Primary")
+	if !cooled || cooldown.Reason != retryReasonSemanticEmptyResponse {
+		t.Fatalf("expected Primary cooldown for semantic empty, got cooled=%v cooldown=%#v", cooled, cooldown)
+	}
+	if got := p.GetCurrentEndpointName(); got != "Fallback" {
+		t.Fatalf("expected semantic empty failure to switch current endpoint to Fallback, got %q", got)
+	}
+	if !hasRuntimeFailureEvent(runtimeEvents, "Primary", retryReasonSemanticEmptyResponse, 0) {
+		t.Fatalf("expected Primary semantic empty runtime failure event, got %#v", runtimeEvents)
+	}
+	if !hasRuntimeSuccessEvent(runtimeEvents, "Fallback") {
+		t.Fatalf("expected Fallback success runtime event, got %#v", runtimeEvents)
+	}
+}
+
+func TestSemanticEmptySingleEndpointWritesFailureAfterRetries(t *testing.T) {
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			`data: {"type":"response.completed","response":{"id":"resp-empty","object":"response","status":"completed","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"output":[]}}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")))
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("Primary", upstream.URL)
+	endpoint.ForceStream = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if hits != endpointSlowFailoverAttempts {
+		t.Fatalf("expected single endpoint semantic empty to retry %d times, got hits=%d", endpointSlowFailoverAttempts, hits)
 	}
 	if !strings.Contains(rec.Body.String(), `"type":"response.failed"`) ||
 		!strings.Contains(rec.Body.String(), retryReasonSemanticEmptyResponse) ||

@@ -315,6 +315,51 @@ func TestAPIKeyUnauthorizedPinnedEndpointDoesNotFailover(t *testing.T) {
 	}
 }
 
+func TestRetryablePinnedEndpointFailureKeepsStandardRetryBudget(t *testing.T) {
+	logger.GetLogger().Clear()
+	logger.GetLogger().SetMinLevel(logger.DEBUG)
+
+	var primaryHits int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))
+	}))
+	defer primary.Close()
+
+	var fallbackHits int
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(validResponsesBody("resp-fallback", "ok")))
+	}))
+	defer fallback.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", primary.URL),
+		failoverPolicyTestEndpoint("Fallback", fallback.URL),
+	}, primary.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CCN-Endpoint", "Primary")
+	req.Header.Set(headerCCNexusRequestID, "req-pinned-5xx-standard-budget")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected pinned retryable failure to exhaust with 503, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if primaryHits != endpointSlowFailoverAttempts {
+		t.Fatalf("expected pinned primary to use standard retry budget of %d, got %d", endpointSlowFailoverAttempts, primaryHits)
+	}
+	if fallbackHits != 0 {
+		t.Fatalf("expected pinned endpoint not to fail over, got fallback hits=%d", fallbackHits)
+	}
+}
+
 func TestTokenPoolUnauthorizedStillRetriesNextToken(t *testing.T) {
 	logger.GetLogger().Clear()
 	logger.GetLogger().SetMinLevel(logger.DEBUG)

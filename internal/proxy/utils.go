@@ -31,8 +31,9 @@ func cloneEndpoints(endpoints []config.Endpoint) []config.Endpoint {
 }
 
 const (
-	endpointFastFailoverAttempts = 2
-	endpointSlowFailoverAttempts = 3
+	endpointFastFailoverAttempts  = 2
+	endpointSlowFailoverAttempts  = 3
+	semanticEmptyFailoverAttempts = 5
 
 	// Disabled by default; the HTTP transport still enforces its 90s ResponseHeaderTimeout.
 	defaultStreamHeaderTimeout     = 0 * time.Second

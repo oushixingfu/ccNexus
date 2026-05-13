@@ -623,8 +623,8 @@ func TestStreamingUpstreamErrorCoolsEndpointForNextRequest(t *testing.T) {
 	streamReq.Header.Set(headerCCNexusRequestID, "req-stream-error-cooldown")
 	streamRec := httptest.NewRecorder()
 	p.handleProxy(streamRec, streamReq)
-	if body := streamRec.Body.String(); !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("expected streaming upstream error to return terminal Responses failure, got %q", body)
+	if body := streamRec.Body.String(); streamRec.Code != http.StatusBadGateway || !strings.Contains(body, `"type":"upstream_stream_error"`) || strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("expected streaming upstream error before data to return HTTP 502 JSON, got status=%d body=%q", streamRec.Code, body)
 	}
 
 	if primaryHits != 1 {
@@ -807,8 +807,8 @@ func TestSpecifiedCurrentEndpointStreamingErrorDoesNotSwitchGlobal(t *testing.T)
 	if len(currentEvents) != 0 {
 		t.Fatalf("expected no current endpoint events, got %#v", currentEvents)
 	}
-	if body := streamRec.Body.String(); !strings.Contains(body, `"type":"response.failed"`) || !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("expected terminal Responses failure for specified stream error, got %q", body)
+	if body := streamRec.Body.String(); streamRec.Code != http.StatusBadGateway || !strings.Contains(body, `"type":"upstream_stream_error"`) || strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("expected specified stream error before data to return HTTP 502 JSON, got status=%d body=%q", streamRec.Code, body)
 	}
 	if logs := joinedProxyLogs(); strings.Contains(logs, "[AUTO SWITCH]") {
 		t.Fatalf("expected no auto switch log for specified current endpoint, got logs:\n%s", logs)

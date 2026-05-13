@@ -153,6 +153,19 @@ func shouldFailoverAfterSemanticEmpty(useSpecificEndpoint bool, plan *requestEnd
 		retry+1 < maxRetries
 }
 
+func semanticEmptyBackoffDuration(attempt int) time.Duration {
+	switch {
+	case attempt <= 1:
+		return 1 * time.Second
+	case attempt == 2:
+		return 2 * time.Second
+	case attempt == 3:
+		return 4 * time.Second
+	default:
+		return 8 * time.Second
+	}
+}
+
 func (p *Proxy) sleepBeforeRetry(d time.Duration) {
 	if d <= 0 {
 		return

@@ -541,11 +541,6 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var streamSession *downstreamStreamSession
 	if streamReq.Stream {
 		streamSession = newDownstreamStreamSession(w, p.streamHeartbeatIntervalOrDefault())
-		if err := streamSession.Start(); err != nil {
-			logger.Error("Failed to start downstream stream: %v %s", err, requestLogFields(obs, "", 0, http.StatusInternalServerError, "downstream_stream_start_failed"))
-			http.Error(w, "Streaming not supported", http.StatusInternalServerError)
-			return
-		}
 		defer streamSession.Close()
 	}
 
@@ -557,8 +552,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	skipCurrentEndpoint := !useSpecificEndpoint && p.isEndpointDeprioritized(currentEndpointName)
 	requestPlan := newRequestEndpointPlanForCurrentWithSkip(requestEndpoints, endpoints, currentEndpointName, skipCurrentEndpoint)
 	maxRetries := p.computeMaxRetries(requestEndpoints)
+	semanticEmptyMaxRetries := len(requestEndpoints) * semanticEmptyFailoverAttempts
 	if useSpecificEndpoint {
 		maxRetries = endpointSlowFailoverAttempts
+		semanticEmptyMaxRetries = semanticEmptyFailoverAttempts
+	}
+	extendSemanticEmptyRetryBudget := func() {
+		if semanticEmptyMaxRetries > maxRetries {
+			maxRetries = semanticEmptyMaxRetries
+		}
 	}
 	forceStreamRetryEndpoints := make(map[string]bool)
 	endpointAttempts := 0
@@ -816,6 +818,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if semanticErr, ok := asSemanticEmptyResponseError(err); ok {
+				extendSemanticEmptyRetryBudget()
 				logRequestAttemptWarn(
 					obs,
 					endpoint.Name,
@@ -828,7 +831,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					semanticErr.OutputTokens,
 					semanticErr.OutputTextLen,
 				)
-				semanticEmptyExhausted := endpointAttempts >= endpointSlowFailoverAttempts
+				semanticEmptyExhausted := endpointAttempts >= semanticEmptyFailoverAttempts
 				p.recordSemanticEmptyResponseFailure(endpoint.Name, credentialID, semanticErr, false)
 				p.markRequestInactive(endpoint.Name)
 				if semanticEmptyExhausted {
@@ -840,6 +843,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					writeSemanticEmptyFailure(w, streamSession, clientFormat, transformerName, semanticErr)
 					return
 				}
+				p.sleepBeforeRetry(semanticEmptyBackoffDuration(endpointAttempts))
 				continue
 			}
 			if isClientCanceled(ctx, err) {
@@ -879,6 +883,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if semanticErr, ok := asSemanticEmptyResponseError(streamResult.Err); ok {
+					extendSemanticEmptyRetryBudget()
 					logRequestAttemptWarn(
 						obs,
 						endpoint.Name,
@@ -893,7 +898,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 						streamResult.WroteData,
 						streamResult.WroteSemanticData,
 					)
-					semanticEmptyExhausted := endpointAttempts >= endpointSlowFailoverAttempts
+					semanticEmptyExhausted := endpointAttempts >= semanticEmptyFailoverAttempts
 					p.recordSemanticEmptyResponseFailure(endpoint.Name, credentialID, semanticErr, false)
 					p.markRequestInactive(endpoint.Name)
 					if streamResult.WroteSemanticData {
@@ -908,6 +913,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 						writeSemanticEmptyFailure(w, streamSession, clientFormat, transformerName, semanticErr)
 						return
 					}
+					p.sleepBeforeRetry(semanticEmptyBackoffDuration(endpointAttempts))
 					continue
 				}
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, retryReason, "Streaming response failed: %v", streamResult.Err)
@@ -916,11 +922,14 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				p.recordEndpointError(endpoint.Name, retryReason)
 				p.markEndpointCooldownForReason(endpoint.Name, retryReason, resp.Header, obs, attemptNumber)
 				p.markRequestInactive(endpoint.Name)
-				if streamSession != nil && streamSession.Started() && !streamResult.WroteData {
-					_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, retryReason, fmt.Sprintf("Streaming response failed: %v", streamResult.Err))
-				}
 				if !useSpecificEndpoint {
 					p.switchCurrentEndpointAfterFailure(endpoint, retryReason, obs, attemptNumber)
+				}
+				if streamSession != nil && streamSession.Started() && !streamResult.WroteData {
+					_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, retryReason, fmt.Sprintf("Streaming response failed: %v", streamResult.Err))
+				} else if streamSession != nil && !streamSession.Started() && !streamResult.WroteData {
+					writeJSONProxyFailure(w, http.StatusBadGateway, retryReason, fmt.Sprintf("Streaming response failed: %v", streamResult.Err))
+					return
 				}
 				return
 			}
@@ -957,6 +966,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if semanticErr, ok := asSemanticEmptyResponseError(err); ok {
+				extendSemanticEmptyRetryBudget()
 				logRequestAttemptWarn(
 					obs,
 					endpoint.Name,
@@ -969,7 +979,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					semanticErr.OutputTokens,
 					semanticErr.OutputTextLen,
 				)
-				semanticEmptyExhausted := endpointAttempts >= endpointSlowFailoverAttempts
+				semanticEmptyExhausted := endpointAttempts >= semanticEmptyFailoverAttempts
 				p.recordSemanticEmptyResponseFailure(endpoint.Name, credentialID, semanticErr, false)
 				p.markRequestInactive(endpoint.Name)
 				if semanticEmptyExhausted {
@@ -981,6 +991,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					writeSemanticEmptyFailure(w, streamSession, clientFormat, transformerName, semanticErr)
 					return
 				}
+				p.sleepBeforeRetry(semanticEmptyBackoffDuration(endpointAttempts))
 				continue
 			}
 			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, "non_stream_response_failed", "Failed to handle non-streaming response: %v", err)

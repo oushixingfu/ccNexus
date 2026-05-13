@@ -333,8 +333,8 @@ func TestSemanticEmptyFallsBackToNextEndpointAfterRetries(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected semantic empty fallback to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if primaryHits != endpointSlowFailoverAttempts {
-		t.Fatalf("expected primary to be retried %d times before fallback, got primary hits=%d", endpointSlowFailoverAttempts, primaryHits)
+	if primaryHits != semanticEmptyFailoverAttempts {
+		t.Fatalf("expected primary to be retried %d times before fallback, got primary hits=%d", semanticEmptyFailoverAttempts, primaryHits)
 	}
 	if fallbackHits != 1 {
 		t.Fatalf("expected semantic empty to call fallback endpoint once, got fallback hits=%d", fallbackHits)
@@ -375,19 +375,32 @@ func TestSemanticEmptySingleEndpointWritesFailureAfterRetries(t *testing.T) {
 	endpoint := failoverPolicyTestEndpoint("Primary", upstream.URL)
 	endpoint.ForceStream = true
 	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+	var sleeps []time.Duration
+	p.retrySleep = func(d time.Duration) {
+		sleeps = append(sleeps, d)
+	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
 	p.handleProxy(rec, req)
 
-	if hits != endpointSlowFailoverAttempts {
-		t.Fatalf("expected single endpoint semantic empty to retry %d times, got hits=%d", endpointSlowFailoverAttempts, hits)
+	if hits != semanticEmptyFailoverAttempts {
+		t.Fatalf("expected single endpoint semantic empty to retry %d times, got hits=%d", semanticEmptyFailoverAttempts, hits)
 	}
-	if !strings.Contains(rec.Body.String(), `"type":"response.failed"`) ||
+	if got, want := len(sleeps), semanticEmptyFailoverAttempts-1; got != want {
+		t.Fatalf("expected %d semantic empty backoff sleeps, got %d: %v", want, got, sleeps)
+	}
+	expectedSleeps := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}
+	for i, want := range expectedSleeps {
+		if sleeps[i] != want {
+			t.Fatalf("expected semantic empty backoff #%d to be %s, got %s", i+1, want, sleeps[i])
+		}
+	}
+	if rec.Code != http.StatusBadGateway ||
 		!strings.Contains(rec.Body.String(), retryReasonSemanticEmptyResponse) ||
-		!strings.Contains(rec.Body.String(), "data: [DONE]") {
-		t.Fatalf("expected downstream Responses stream failure for semantic empty, got status=%d body=%q", rec.Code, rec.Body.String())
+		strings.Contains(rec.Body.String(), `"type":"response.failed"`) {
+		t.Fatalf("expected HTTP 502 JSON failure before stream starts, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
 }
 

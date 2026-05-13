@@ -60,12 +60,26 @@ func writeSemanticEmptyFailure(w http.ResponseWriter, streamSession *downstreamS
 		_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, retryReasonSemanticEmptyResponse, err.Error())
 		return
 	}
+	writeJSONProxyFailure(w, http.StatusBadGateway, retryReasonSemanticEmptyResponse, err.Error())
+}
+
+func writeJSONProxyFailure(w http.ResponseWriter, statusCode int, code string, message string) {
+	if statusCode <= 0 {
+		statusCode = http.StatusBadGateway
+	}
+	code = sanitizeLogField(code)
+	if code == "" {
+		code = "upstream_error"
+	}
+	if strings.TrimSpace(message) == "" {
+		message = "upstream request failed"
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadGateway)
+	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": map[string]interface{}{
-			"type":    retryReasonSemanticEmptyResponse,
-			"message": err.Error(),
+			"type":    code,
+			"message": message,
 		},
 	})
 }

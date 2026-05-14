@@ -43,3 +43,26 @@ func TestDeriveEndpointAvailabilityDisabled(t *testing.T) {
 		t.Fatalf("expected disabled status, got available=%t availability=%q reason=%q statusCode=%d", available, availability, reason, statusCode)
 	}
 }
+
+func TestBuildEndpointResponseIncludesEffectiveUpstreams(t *testing.T) {
+	endpoint := storage.Endpoint{
+		Name:                    "gateway",
+		Enabled:                 true,
+		Transformer:             "openai2",
+		Model:                   "gpt-5.5",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsOpenAIChat:      true,
+	}
+
+	response := buildEndpointResponse(endpoint, nil)
+	if response.EffectiveClaudeUpstream != "openai" {
+		t.Fatalf("expected Claude Code effective upstream openai, got %q", response.EffectiveClaudeUpstream)
+	}
+	if response.EffectiveOpenAIChatUpstream != "openai" {
+		t.Fatalf("expected OpenAI Chat effective upstream openai, got %q", response.EffectiveOpenAIChatUpstream)
+	}
+	if response.EffectiveOpenAIResponsesUpstream != "openai2" {
+		t.Fatalf("expected OpenAI Responses effective upstream openai2, got %q", response.EffectiveOpenAIResponsesUpstream)
+	}
+}

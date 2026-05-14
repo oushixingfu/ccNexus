@@ -55,6 +55,23 @@ func shouldFallbackResponsesToChat(statusCode int, lowerBody string) bool {
 	if statusCode == 404 || statusCode == 405 {
 		return true
 	}
+	if strings.Contains(lowerBody, "unsupported parameter") &&
+		(strings.Contains(lowerBody, "max_output_tokens") ||
+			strings.Contains(lowerBody, "input") ||
+			strings.Contains(lowerBody, "instructions") ||
+			strings.Contains(lowerBody, "store") ||
+			strings.Contains(lowerBody, "reasoning")) {
+		return true
+	}
+	if strings.Contains(lowerBody, "bad_response_body") ||
+		strings.Contains(lowerBody, "invalid character") ||
+		strings.Contains(lowerBody, "looking for beginning of value") {
+		return true
+	}
+	if strings.Contains(lowerBody, "responses") &&
+		(strings.Contains(lowerBody, "not supported") || strings.Contains(lowerBody, "unsupported")) {
+		return true
+	}
 	if !strings.Contains(lowerBody, "messages") &&
 		!strings.Contains(lowerBody, "api.responses.write") &&
 		!strings.Contains(lowerBody, "chat/completions") {

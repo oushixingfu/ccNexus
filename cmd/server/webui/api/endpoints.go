@@ -8,17 +8,21 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	proxypkg "github.com/lich0821/ccNexus/internal/proxy"
 	"github.com/lich0821/ccNexus/internal/service"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
 type endpointResponse struct {
 	storage.Endpoint
-	RuntimeStatus          *storage.EndpointRuntimeStatus `json:"runtimeStatus,omitempty"`
-	Available              bool                           `json:"available"`
-	Availability           string                         `json:"availability"`
-	AvailabilityReason     string                         `json:"availabilityReason,omitempty"`
-	AvailabilityStatusCode int                            `json:"availabilityStatusCode,omitempty"`
+	RuntimeStatus                    *storage.EndpointRuntimeStatus `json:"runtimeStatus,omitempty"`
+	Available                        bool                           `json:"available"`
+	Availability                     string                         `json:"availability"`
+	AvailabilityReason               string                         `json:"availabilityReason,omitempty"`
+	AvailabilityStatusCode           int                            `json:"availabilityStatusCode,omitempty"`
+	EffectiveClaudeUpstream          string                         `json:"effectiveClaudeUpstream,omitempty"`
+	EffectiveOpenAIChatUpstream      string                         `json:"effectiveOpenAIChatUpstream,omitempty"`
+	EffectiveOpenAIResponsesUpstream string                         `json:"effectiveOpenAIResponsesUpstream,omitempty"`
 }
 
 // handleEndpoints handles GET (list) and POST (create) for endpoints
@@ -132,13 +136,43 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 
 func buildEndpointResponse(endpoint storage.Endpoint, status *storage.EndpointRuntimeStatus) endpointResponse {
 	available, availability, reason, statusCode := deriveEndpointAvailability(endpoint.Enabled, status)
+	effective := effectiveEndpointUpstreams(endpoint)
 	return endpointResponse{
-		Endpoint:               endpoint,
-		RuntimeStatus:          status,
-		Available:              available,
-		Availability:           availability,
-		AvailabilityReason:     reason,
-		AvailabilityStatusCode: statusCode,
+		Endpoint:                         endpoint,
+		RuntimeStatus:                    status,
+		Available:                        available,
+		Availability:                     availability,
+		AvailabilityReason:               reason,
+		AvailabilityStatusCode:           statusCode,
+		EffectiveClaudeUpstream:          effective["claude"],
+		EffectiveOpenAIChatUpstream:      effective["openai_chat"],
+		EffectiveOpenAIResponsesUpstream: effective["openai_responses"],
+	}
+}
+
+func effectiveEndpointUpstreams(endpoint storage.Endpoint) map[string]string {
+	configEndpoint := config.Endpoint{
+		Name:                    endpoint.Name,
+		APIUrl:                  endpoint.APIUrl,
+		APIKey:                  endpoint.APIKey,
+		AuthMode:                endpoint.AuthMode,
+		Enabled:                 endpoint.Enabled,
+		Transformer:             endpoint.Transformer,
+		Model:                   endpoint.Model,
+		Thinking:                endpoint.Thinking,
+		ForceStream:             endpoint.ForceStream,
+		AutoSelect:              endpoint.AutoSelect,
+		SupportsOpenAIResponses: endpoint.SupportsOpenAIResponses,
+		SupportsOpenAIChat:      endpoint.SupportsOpenAIChat,
+		SupportsClaudeMessages:  endpoint.SupportsClaudeMessages,
+		PreferredClaudeUpstream: endpoint.PreferredClaudeUpstream,
+		PreferredOpenAIUpstream: endpoint.PreferredOpenAIUpstream,
+		Remark:                  endpoint.Remark,
+	}
+	return map[string]string{
+		"claude":           proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatClaude, configEndpoint),
+		"openai_chat":      proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIChat, configEndpoint),
+		"openai_responses": proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIResponses, configEndpoint),
 	}
 }
 

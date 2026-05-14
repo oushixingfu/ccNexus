@@ -147,6 +147,103 @@ func TestEndpointForClientFormatPrefersNativeOpenAI2ForClaudeWithoutPreference(t
 	}
 }
 
+func TestEndpointForClientFormatPrefersChatForClaudeWhenAvailable(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:                    "chat-capable-gateway",
+		Transformer:             "openai2",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsOpenAIChat:      true,
+		Model:                   "gpt-5.5",
+	}
+
+	claudeUpstream := endpointForClientFormat(ClientFormatClaude, endpoint)
+	if claudeUpstream.Transformer != "openai" {
+		t.Fatalf("expected Claude client to prefer chat upstream, got %s", claudeUpstream.Transformer)
+	}
+}
+
+func TestEndpointForClientFormatHonorsExplicitClaudeResponsesPreference(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:                    "responses-preferred",
+		Transformer:             "openai2",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsOpenAIChat:      true,
+		PreferredClaudeUpstream: "openai2",
+		Model:                   "gpt-5.5",
+	}
+
+	claudeUpstream := endpointForClientFormat(ClientFormatClaude, endpoint)
+	if claudeUpstream.Transformer != "openai2" {
+		t.Fatalf("expected explicit Claude preference to use openai2, got %s", claudeUpstream.Transformer)
+	}
+}
+
+func TestProtocolFallbackResponsesUnsupportedParameterFallsBackToChat(t *testing.T) {
+	endpoint := config.Endpoint{
+		Name:                    "gateway",
+		Transformer:             "openai2",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsOpenAIChat:      true,
+		Model:                   "gpt-5.5",
+	}
+	upstreamEndpoint := endpoint
+	upstreamEndpoint.Transformer = "openai2"
+
+	got := protocolFallbackTransformerForHTTPFailure(
+		ClientFormatClaude,
+		endpoint,
+		upstreamEndpoint,
+		"cc_openai2",
+		http.StatusBadRequest,
+		`{"error":{"message":"Unsupported parameter: max_output_tokens"}}`,
+	)
+	if got != "openai" {
+		t.Fatalf("expected fallback to openai chat, got %q", got)
+	}
+}
+
+func TestHandleProxyClaudeClientUsesChatWhenGatewaySupportsChatAndResponses(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("expected chat upstream path, got %s", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode upstream payload: %v", err)
+		}
+		if payload["model"] != "gpt-5.5" {
+			t.Fatalf("expected endpoint model override, got %#v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("gateway", upstream.URL)
+	endpoint.Transformer = "openai2"
+	endpoint.Model = "gpt-5.5"
+	endpoint.AutoSelect = true
+	endpoint.SupportsOpenAIResponses = true
+	endpoint.SupportsOpenAIChat = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5-20250929","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "chat ok") {
+		t.Fatalf("expected Claude-format response converted from chat, got %q", rec.Body.String())
+	}
+}
+
 func TestHandleProxyAutoSelectOneEndpointServesClaudeAndResponsesConcurrently(t *testing.T) {
 	paths := make(chan string, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

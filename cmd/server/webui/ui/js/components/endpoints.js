@@ -87,6 +87,7 @@ class Endpoints {
                             <th>${t('common.name')}</th>
                             <th>${t('endpoints.apiUrl')}</th>
                             <th>${t('endpoints.transformer')}</th>
+                            <th>${t('endpoints.claudeCodeUpstream')}</th>
                             <th>${t('endpoints.model')}</th>
                             <th>${t('endpoints.tokenPool')}</th>
                             <th>${t('common.status')}</th>
@@ -137,6 +138,7 @@ class Endpoints {
                     </button>
                 </td>
                 <td>${getTransformerLabel(ep.transformer)}${ep.autoSelect ? ` <span class="badge badge-primary">${t('endpoints.autoSelectShort')}</span>` : ''}</td>
+                <td>${this.renderEffectiveClaudeUpstream(ep)}</td>
                 <td>${this.escapeHtml(ep.model || '-')}</td>
                 <td>${this.renderTokenPoolSummary(this.tokenPools[ep.name])}</td>
                 <td>${this.renderEndpointStatus(ep)}</td>
@@ -170,6 +172,17 @@ class Endpoints {
                 </td>
             </tr>
         `;
+    }
+
+    renderEffectiveClaudeUpstream(ep) {
+        const upstream = ep.effectiveClaudeUpstream || ep.transformer || '-';
+        const label = upstream === '-' ? '-' : getTransformerLabel(upstream);
+        const title = [
+            `${t('endpoints.claudeCodeUpstream')}: ${label}`,
+            ep.effectiveOpenAIChatUpstream ? `OpenAI Chat: ${getTransformerLabel(ep.effectiveOpenAIChatUpstream)}` : '',
+            ep.effectiveOpenAIResponsesUpstream ? `OpenAI Responses: ${getTransformerLabel(ep.effectiveOpenAIResponsesUpstream)}` : ''
+        ].filter(Boolean).join(' · ');
+        return `<span class="badge badge-info" title="${this.escapeHtml(title)}">${this.escapeHtml(label)}</span>`;
     }
 
     renderEndpointStatus(ep) {

@@ -28,6 +28,15 @@ func endpointForClientFormat(clientFormat ClientFormat, endpoint config.Endpoint
 	return effective
 }
 
+// EffectiveUpstreamTransformerForClientFormat returns the upstream protocol that
+// ccNexus will use for a given client format without mutating the endpoint.
+func EffectiveUpstreamTransformerForClientFormat(clientFormat ClientFormat, endpoint config.Endpoint) string {
+	if !endpoint.AutoSelect {
+		return providercompat.NormalizeTransformer(endpoint.Transformer)
+	}
+	return selectEndpointUpstreamTransformer(clientFormat, endpoint)
+}
+
 func selectEndpointUpstreamTransformer(clientFormat ClientFormat, endpoint config.Endpoint) string {
 	caps := capabilitiesForEndpoint(endpoint)
 	native := providercompat.NormalizeTransformer(endpoint.Transformer)
@@ -40,11 +49,14 @@ func selectEndpointUpstreamTransformer(clientFormat ClientFormat, endpoint confi
 		if selected := selectPreferredUpstream(endpoint.PreferredClaudeUpstream, endpoint, caps); selected != "" {
 			return selected
 		}
+		if native == providercompat.TransformerClaude && supportsUpstreamTransformer(providercompat.TransformerClaude, caps) {
+			return providercompat.TransformerClaude
+		}
 		for _, candidate := range []string{
-			native,
-			providercompat.TransformerClaude,
-			providercompat.TransformerOpenAI2,
 			openAIChatTransformerForEndpoint(endpoint),
+			providercompat.TransformerOpenAI2,
+			providercompat.TransformerClaude,
+			native,
 		} {
 			if supportsUpstreamTransformer(candidate, caps) {
 				return candidate

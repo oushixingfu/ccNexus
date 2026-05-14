@@ -61,6 +61,7 @@ export default {
         apiUrl: 'API 地址',
         apiKey: 'API 密钥',
         transformer: '转换器',
+        claudeCodeUpstream: 'Claude Code 上游',
         model: '模型',
         tokenPool: '令牌池',
         status: '状态',

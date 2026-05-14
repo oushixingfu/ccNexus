@@ -61,6 +61,7 @@ export default {
         apiUrl: 'API URL',
         apiKey: 'API Key',
         transformer: 'Transformer',
+        claudeCodeUpstream: 'Claude Code Upstream',
         model: 'Model',
         tokenPool: 'Token Pool',
         status: 'Status',

@@ -140,7 +140,11 @@ func ApplyEndpointAuthModeRules(ep *Endpoint) {
 	ep.AuthMode = NormalizeAuthMode(ep.AuthMode)
 	ep.Thinking = NormalizeThinkingEffort(ep.Thinking)
 	ep.APIUrl = strings.TrimSuffix(strings.TrimSpace(ep.APIUrl), "/")
-	ep.Transformer = providercompat.NormalizeTransformer(ep.Transformer)
+	if strings.TrimSpace(ep.Transformer) != "" && providercompat.IsAutoTransformer(ep.Transformer) {
+		ep.Transformer = providercompat.InferEndpointTransformer(ep.APIUrl, ep.Model, ep.Transformer)
+	} else {
+		ep.Transformer = providercompat.NormalizeTransformer(ep.Transformer)
+	}
 	ep.PreferredClaudeUpstream = NormalizeEndpointUpstreamPreference(ep.PreferredClaudeUpstream)
 	ep.PreferredOpenAIUpstream = NormalizeEndpointUpstreamPreference(ep.PreferredOpenAIUpstream)
 

@@ -80,8 +80,8 @@ func (e *EndpointService) resolveProxyURLForTarget(targetURL string) string {
 
 // Test endpoint constants
 const (
-	testMessage   = "你是什么模型?"
-	testMaxTokens = 16
+	testMessage   = "ping"
+	testMaxTokens = 64
 
 	codexTestClientVersion = "0.101.0"
 	codexTestUserAgent     = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
@@ -136,6 +136,295 @@ func (e *EndpointService) resolveEndpointAPIKey(endpoint config.Endpoint) (strin
 	return apiKey, err
 }
 
+type endpointProtocolProbe struct {
+	transformer string
+	ok          bool
+	statusCode  int
+	err         error
+}
+
+func (e *EndpointService) autoConfigureEndpoint(endpoint *config.Endpoint, probe bool) {
+	if endpoint == nil {
+		return
+	}
+
+	if providercompat.IsAutoTransformer(endpoint.Transformer) {
+		endpoint.Transformer = providercompat.InferEndpointTransformer(endpoint.APIUrl, endpoint.Model, endpoint.Transformer)
+	}
+	config.ApplyEndpointAuthModeRules(endpoint)
+	applyEndpointCapabilityDefaults(endpoint)
+
+	if !probe || !endpoint.AutoSelect || endpoint.AuthMode != config.AuthModeAPIKey || strings.TrimSpace(endpoint.APIKey) == "" {
+		return
+	}
+
+	apiKey, credential, err := e.resolveEndpointAuth(*endpoint)
+	if err != nil || strings.TrimSpace(apiKey) == "" {
+		logger.Debug("[%s] Skip endpoint capability probe: %v", endpoint.Name, err)
+		return
+	}
+
+	probes := e.probeEndpointProtocols(*endpoint, apiKey, credential)
+	if len(probes) == 0 {
+		return
+	}
+
+	chatOK := false
+	responsesOK := false
+	claudeOK := false
+	geminiOK := false
+	for _, result := range probes {
+		if !result.ok {
+			continue
+		}
+		switch providercompat.NormalizeTransformer(result.transformer) {
+		case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+			chatOK = true
+		case providercompat.TransformerOpenAI2:
+			responsesOK = true
+		case providercompat.TransformerClaude:
+			claudeOK = true
+		case providercompat.TransformerGemini:
+			geminiOK = true
+		}
+	}
+
+	if !chatOK && !responsesOK && !claudeOK && !geminiOK {
+		return
+	}
+
+	endpoint.AutoSelect = true
+	endpoint.SupportsOpenAIChat = chatOK
+	endpoint.SupportsOpenAIResponses = responsesOK
+	endpoint.SupportsClaudeMessages = claudeOK
+	if geminiOK {
+		endpoint.Transformer = providercompat.TransformerGemini
+	}
+
+	providerTransformer := providercompat.InferProviderTransformer(endpoint.APIUrl, endpoint.Model)
+	if providercompat.IsOpenAIChatTransformer(providerTransformer) {
+		endpoint.Transformer = providerTransformer
+	}
+
+	endpoint.PreferredOpenAIUpstream = preferredOpenAIUpstreamForDetection(endpoint.Transformer, chatOK, responsesOK, claudeOK)
+	endpoint.PreferredClaudeUpstream = preferredClaudeUpstreamForDetection(claudeOK, responsesOK, chatOK)
+	logger.Info("[%s] Auto-detected endpoint capabilities: provider=%s chat=%t responses=%t claude=%t preferred_openai=%s",
+		endpoint.Name,
+		endpoint.Transformer,
+		endpoint.SupportsOpenAIChat,
+		endpoint.SupportsOpenAIResponses,
+		endpoint.SupportsClaudeMessages,
+		endpoint.PreferredOpenAIUpstream,
+	)
+}
+
+func (e *EndpointService) AutoConfigureEndpoint(endpoint *config.Endpoint, probe bool) {
+	e.autoConfigureEndpoint(endpoint, probe)
+}
+
+func applyEndpointCapabilityDefaults(endpoint *config.Endpoint) {
+	if endpoint == nil {
+		return
+	}
+	transformer := providercompat.NormalizeTransformer(endpoint.Transformer)
+	if endpoint.PreferredClaudeUpstream == "" {
+		endpoint.PreferredClaudeUpstream = "auto"
+	}
+	if endpoint.PreferredOpenAIUpstream == "" {
+		endpoint.PreferredOpenAIUpstream = "auto"
+	}
+	if endpoint.SupportsOpenAIChat || endpoint.SupportsOpenAIResponses || endpoint.SupportsClaudeMessages {
+		return
+	}
+	switch transformer {
+	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+		endpoint.SupportsOpenAIChat = true
+	case providercompat.TransformerOpenAI2:
+		endpoint.SupportsOpenAIResponses = true
+	case providercompat.TransformerClaude:
+		endpoint.SupportsClaudeMessages = true
+	}
+}
+
+func preferredOpenAIUpstreamForDetection(transformer string, chatOK, responsesOK, claudeOK bool) string {
+	switch providercompat.NormalizeTransformer(transformer) {
+	case providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+		if chatOK {
+			return providercompat.TransformerOpenAI
+		}
+	}
+	if responsesOK {
+		return providercompat.TransformerOpenAI2
+	}
+	if chatOK {
+		return providercompat.TransformerOpenAI
+	}
+	if claudeOK {
+		return providercompat.TransformerClaude
+	}
+	return "auto"
+}
+
+func preferredClaudeUpstreamForDetection(claudeOK, responsesOK, chatOK bool) string {
+	if claudeOK {
+		return providercompat.TransformerClaude
+	}
+	if responsesOK {
+		return providercompat.TransformerOpenAI2
+	}
+	if chatOK {
+		return providercompat.TransformerOpenAI
+	}
+	return "auto"
+}
+
+func (e *EndpointService) probeEndpointProtocols(endpoint config.Endpoint, apiKey string, credential *storage.EndpointCredential) []endpointProtocolProbe {
+	if providercompat.NormalizeTransformer(endpoint.Transformer) == providercompat.TransformerGemini {
+		return []endpointProtocolProbe{e.probeEndpointProtocol(endpoint, providercompat.TransformerGemini, apiKey, credential)}
+	}
+
+	chatTransformer := providercompat.InferProviderTransformer(endpoint.APIUrl, endpoint.Model)
+	if !providercompat.IsOpenAIChatTransformer(chatTransformer) {
+		chatTransformer = endpoint.Transformer
+	}
+	if !providercompat.IsOpenAIChatTransformer(chatTransformer) {
+		chatTransformer = providercompat.TransformerOpenAI
+	}
+
+	candidates := []string{
+		chatTransformer,
+		providercompat.TransformerOpenAI2,
+		providercompat.TransformerClaude,
+	}
+	results := make([]endpointProtocolProbe, 0, len(candidates))
+	seen := make(map[string]bool)
+	for _, candidate := range candidates {
+		candidate = providercompat.NormalizeTransformer(candidate)
+		if candidate == "" || candidate == "auto" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		results = append(results, e.probeEndpointProtocol(endpoint, candidate, apiKey, credential))
+	}
+	return results
+}
+
+func (e *EndpointService) probeEndpointProtocol(endpoint config.Endpoint, transformer string, apiKey string, credential *storage.EndpointCredential) endpointProtocolProbe {
+	result := endpointProtocolProbe{transformer: transformer}
+	reqURL, body, err := buildEndpointProbeRequest(endpoint, transformer)
+	if err != nil {
+		result.err = err
+		return result
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(body))
+	if err != nil {
+		result.err = err
+		return result
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setEndpointProbeAuth(req, transformer, apiKey)
+	applyCodexCredentialHeadersForTest(req, credential, body)
+
+	client := e.createHTTPClient(30*time.Second, reqURL)
+	resp, err := client.Do(req)
+	if err != nil {
+		result.err = err
+		return result
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		result.statusCode = resp.StatusCode
+		result.err = err
+		return result
+	}
+	result.statusCode = resp.StatusCode
+	if resp.StatusCode != http.StatusOK {
+		result.err = fmt.Errorf("HTTP %d: %s", resp.StatusCode, providercompat.TruncateErrorBody(string(respBody)))
+		return result
+	}
+	if err := proxy.ValidateSemanticResponseHasOutput(respBody, resp.Header.Get("Content-Type")); err != nil {
+		result.err = err
+		return result
+	}
+	result.ok = true
+	return result
+}
+
+func buildEndpointProbeRequest(endpoint config.Endpoint, transformer string) (string, []byte, error) {
+	normalizedURL := resolveNormalizedAPIURL(endpoint.APIUrl)
+	transformer = providercompat.NormalizeTransformer(transformer)
+	model := strings.TrimSpace(endpoint.Model)
+	if model == "" {
+		model = providercompat.DefaultModel(transformer)
+	}
+
+	var apiPath string
+	var body []byte
+	var err error
+	switch transformer {
+	case providercompat.TransformerClaude:
+		apiPath = "/v1/messages"
+		body, err = json.Marshal(map[string]interface{}{
+			"model":      model,
+			"max_tokens": testMaxTokens,
+			"messages":   []map[string]string{{"role": "user", "content": testMessage}},
+		})
+	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+		apiPath = providercompat.OpenAIChatTargetPath(transformer, normalizedURL)
+		body, err = json.Marshal(map[string]interface{}{
+			"model":      model,
+			"max_tokens": testMaxTokens,
+			"messages":   []map[string]interface{}{{"role": "user", "content": testMessage}},
+		})
+		if err == nil {
+			body = providercompat.AdaptOpenAIChatPayload(body, transformer, normalizedURL, endpoint.Thinking)
+		}
+	case providercompat.TransformerOpenAI2:
+		apiPath = "/v1/responses"
+		body, err = json.Marshal(map[string]interface{}{
+			"model":             model,
+			"stream":            false,
+			"max_output_tokens": testMaxTokens,
+			"input": []map[string]interface{}{
+				{"type": "message", "role": "user", "content": []map[string]interface{}{{"type": "input_text", "text": testMessage}}},
+			},
+		})
+		if err == nil && isCodexBackendAPIURL(normalizedURL) {
+			body = ensureCodexResponsesProbePayload(body)
+		}
+	case providercompat.TransformerGemini:
+		apiPath = fmt.Sprintf("/v1beta/models/%s:generateContent", model)
+		body, err = json.Marshal(map[string]interface{}{
+			"contents":         []map[string]interface{}{{"parts": []map[string]string{{"text": testMessage}}}},
+			"generationConfig": map[string]int{"maxOutputTokens": testMaxTokens},
+		})
+	default:
+		return "", nil, fmt.Errorf("unsupported transformer: %s", transformer)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	reqURL := fmt.Sprintf("%s%s", normalizedURL, normalizeEndpointPathForBaseURL(normalizedURL, apiPath))
+	return reqURL, body, nil
+}
+
+func setEndpointProbeAuth(req *http.Request, transformer string, apiKey string) {
+	switch providercompat.NormalizeTransformer(transformer) {
+	case providercompat.TransformerClaude:
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	case providercompat.TransformerGemini:
+		q := req.URL.Query()
+		q.Set("key", apiKey)
+		req.URL.RawQuery = q.Encode()
+	default:
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+}
+
 // AddEndpoint adds a new endpoint
 func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transformer, model, thinking string, forceStream bool, remark string) error {
 	endpoints := e.config.GetEndpoints()
@@ -146,9 +435,8 @@ func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transforme
 	}
 
 	if transformer == "" {
-		transformer = "claude"
+		transformer = "auto"
 	}
-	transformer = providercompat.NormalizeTransformer(transformer)
 	authMode = config.NormalizeAuthMode(authMode)
 	if config.IsTokenPoolAuthMode(authMode) {
 		apiKey = ""
@@ -157,21 +445,19 @@ func (e *EndpointService) AddEndpoint(name, apiUrl, apiKey, authMode, transforme
 	apiUrl = normalizeAPIUrl(apiUrl)
 
 	newEndpoint := config.Endpoint{
-		Name:                    name,
-		APIUrl:                  apiUrl,
-		APIKey:                  apiKey,
-		AuthMode:                authMode,
-		Enabled:                 true,
-		Transformer:             transformer,
-		Model:                   model,
-		Thinking:                thinking,
-		ForceStream:             forceStream,
-		SupportsOpenAIResponses: transformer == providercompat.TransformerOpenAI2,
-		SupportsOpenAIChat:      providercompat.IsOpenAIChatTransformer(transformer),
-		SupportsClaudeMessages:  transformer == providercompat.TransformerClaude,
-		Remark:                  remark,
+		Name:        name,
+		APIUrl:      apiUrl,
+		APIKey:      apiKey,
+		AuthMode:    authMode,
+		Enabled:     true,
+		Transformer: transformer,
+		Model:       model,
+		Thinking:    thinking,
+		ForceStream: forceStream,
+		AutoSelect:  true,
+		Remark:      remark,
 	}
-	config.ApplyEndpointAuthModeRules(&newEndpoint)
+	e.autoConfigureEndpoint(&newEndpoint, true)
 	endpoints = append(endpoints, newEndpoint)
 
 	currentEndpointName := e.proxy.GetCurrentEndpointName()
@@ -258,9 +544,8 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 	enabled := endpoints[index].Enabled
 
 	if transformer == "" {
-		transformer = "claude"
+		transformer = "auto"
 	}
-	transformer = providercompat.NormalizeTransformer(transformer)
 	authMode = config.NormalizeAuthMode(authMode)
 	if config.IsTokenPoolAuthMode(authMode) {
 		apiKey = ""
@@ -286,7 +571,10 @@ func (e *EndpointService) UpdateEndpoint(index int, name, apiUrl, apiKey, authMo
 		PreferredOpenAIUpstream: endpoints[index].PreferredOpenAIUpstream,
 		Remark:                  remark,
 	}
-	config.ApplyEndpointAuthModeRules(&updatedEndpoint)
+	if providercompat.IsAutoTransformer(transformer) {
+		updatedEndpoint.AutoSelect = true
+	}
+	e.autoConfigureEndpoint(&updatedEndpoint, updatedEndpoint.AutoSelect)
 	endpoints[index] = updatedEndpoint
 	if oldName == currentEndpointName {
 		preserveEndpointName = updatedEndpoint.Name
@@ -499,8 +787,9 @@ func (e *EndpointService) TestEndpoint(index int) string {
 			model = providercompat.DefaultModel(transformer)
 		}
 		requestBody, err = json.Marshal(map[string]interface{}{
-			"model":  model,
-			"stream": true,
+			"model":             model,
+			"stream":            true,
+			"max_output_tokens": testMaxTokens,
 			"input": []map[string]interface{}{
 				{
 					"type": "message",
@@ -1474,15 +1763,14 @@ func (e *EndpointService) resolveTokenPoolAuthForAPI(apiURL, transformer string)
 func (e *EndpointService) FetchModels(apiUrl, apiKey, transformer string) string {
 	logger.Info("Fetching models for transformer: %s", transformer)
 
-	if transformer == "" {
-		transformer = "claude"
-	}
-	transformer = providercompat.NormalizeTransformer(transformer)
-
 	normalizedAPIUrl := normalizeAPIUrl(apiUrl)
 	if !strings.HasPrefix(normalizedAPIUrl, "http://") && !strings.HasPrefix(normalizedAPIUrl, "https://") {
 		normalizedAPIUrl = "https://" + normalizedAPIUrl
 	}
+	if transformer == "" {
+		transformer = "auto"
+	}
+	transformer = providercompat.InferEndpointTransformer(normalizedAPIUrl, "", transformer)
 	var resolvedCredential *storage.EndpointCredential
 	resolvedAPIKey := strings.TrimSpace(apiKey)
 	if resolvedAPIKey == "" {

@@ -408,7 +408,8 @@ export function initUI() {
                     <div class="form-group">
                         <label><span class="required">*</span>${t('modal.transformer')}</label>
                         <select id="endpointTransformer" onchange="window.handleTransformerChange()">
-                            <option value="claude">Claude (Default)</option>
+                            <option value="auto">${t('modal.transformerAuto')}</option>
+                            <option value="claude">Claude</option>
                             <option value="openai">OpenAI</option>
                             <option value="openai2">OpenAI2 (Responses API)</option>
                             <option value="gemini">Gemini</option>

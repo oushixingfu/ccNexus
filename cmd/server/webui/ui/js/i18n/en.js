@@ -254,6 +254,7 @@ export default {
         urlCopied: 'URL copied'
     },
     transformers: {
+        auto: 'Auto-detect',
         claude: 'Claude',
         openai: 'OpenAI',
         openai2: 'OpenAI Responses',

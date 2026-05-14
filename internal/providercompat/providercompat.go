@@ -46,6 +46,8 @@ func NormalizeTransformer(transformer string) string {
 	switch strings.ToLower(strings.TrimSpace(transformer)) {
 	case "", TransformerClaude:
 		return TransformerClaude
+	case "auto", "detect", "default":
+		return "auto"
 	case TransformerOpenAI, "openai_chat", "chat", "chat_completions":
 		return TransformerOpenAI
 	case TransformerOpenAI2, "openai_responses", "responses":
@@ -59,6 +61,65 @@ func NormalizeTransformer(transformer string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(transformer))
 	}
+}
+
+func IsAutoTransformer(transformer string) bool {
+	switch strings.ToLower(strings.TrimSpace(transformer)) {
+	case "", "auto", "detect", "default":
+		return true
+	default:
+		return false
+	}
+}
+
+func InferProviderTransformer(baseURL, model string) string {
+	normalizedURL := NormalizeBaseURL(baseURL)
+	parsed, err := url.Parse(normalizedURL)
+	host := ""
+	cleanPath := ""
+	if err == nil && parsed != nil {
+		host = strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+		cleanPath = strings.ToLower(cleanAPIPath(parsed.Path))
+	}
+
+	lowerModel := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.Contains(host, "moonshot") || strings.Contains(host, "kimi") ||
+		strings.HasPrefix(lowerModel, "kimi-") || strings.Contains(lowerModel, "moonshot"):
+		return TransformerKimi
+	case strings.Contains(host, "deepseek") || strings.HasPrefix(lowerModel, "deepseek-"):
+		return TransformerDeepSeek
+	case strings.Contains(host, "generativelanguage.googleapis.com") || strings.Contains(host, "gemini") ||
+		strings.HasPrefix(lowerModel, "gemini-"):
+		return TransformerGemini
+	case strings.Contains(host, "anthropic") || strings.Contains(host, "claude") ||
+		strings.HasPrefix(lowerModel, "claude-"):
+		return TransformerClaude
+	case strings.Contains(host, "chatgpt.com") && strings.Contains(cleanPath, "/backend-api/codex"):
+		return TransformerOpenAI2
+	case strings.Contains(host, "openai") ||
+		strings.HasPrefix(lowerModel, "gpt-") ||
+		strings.HasPrefix(lowerModel, "o1") ||
+		strings.HasPrefix(lowerModel, "o3") ||
+		strings.HasPrefix(lowerModel, "o4"):
+		return TransformerOpenAI
+	default:
+		return ""
+	}
+}
+
+func InferEndpointTransformer(baseURL, model, transformer string) string {
+	normalized := NormalizeTransformer(transformer)
+	if !IsAutoTransformer(transformer) && normalized != "auto" {
+		return normalized
+	}
+	if inferred := InferProviderTransformer(baseURL, model); inferred != "" {
+		return inferred
+	}
+	if strings.TrimSpace(baseURL) != "" {
+		return TransformerOpenAI
+	}
+	return TransformerClaude
 }
 
 func IsOpenAIChatTransformer(transformer string) bool {

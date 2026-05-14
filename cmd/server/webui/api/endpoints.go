@@ -8,7 +8,7 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
-	"github.com/lich0821/ccNexus/internal/providercompat"
+	"github.com/lich0821/ccNexus/internal/service"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -229,7 +229,10 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	if req.ForceStream != nil {
 		forceStream = *req.ForceStream
 	}
-	autoSelect := boolFromPtr(req.AutoSelect)
+	autoSelect := true
+	if req.AutoSelect != nil {
+		autoSelect = *req.AutoSelect
+	}
 	supportsOpenAIResponses := boolFromPtr(req.SupportsOpenAIResponses)
 	supportsOpenAIChat := boolFromPtr(req.SupportsOpenAIChat)
 	supportsClaudeMessages := boolFromPtr(req.SupportsClaudeMessages)
@@ -250,10 +253,9 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		Remark:                  req.Remark,
 	}
 	if normalizedEndpoint.Transformer == "" {
-		normalizedEndpoint.Transformer = "claude"
+		normalizedEndpoint.Transformer = "auto"
 	}
-	normalizedEndpoint.Transformer = providercompat.NormalizeTransformer(normalizedEndpoint.Transformer)
-	config.ApplyEndpointAuthModeRules(&normalizedEndpoint)
+	service.NewEndpointService(h.config, h.proxy, h.storage).AutoConfigureEndpoint(&normalizedEndpoint, normalizedEndpoint.AutoSelect)
 	authMode = normalizedEndpoint.AuthMode
 	req.APIUrl = normalizedEndpoint.APIUrl
 	req.APIKey = normalizedEndpoint.APIKey
@@ -442,12 +444,12 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 		normalizedEndpoint.PreferredOpenAIUpstream = req.PreferredOpenAIUpstream
 	}
 	if normalizedEndpoint.Transformer == "" {
-		normalizedEndpoint.Transformer = "claude"
+		normalizedEndpoint.Transformer = "auto"
 	}
 	if req.Transformer != "" {
-		normalizedEndpoint.Transformer = providercompat.NormalizeTransformer(req.Transformer)
+		normalizedEndpoint.Transformer = req.Transformer
 	}
-	config.ApplyEndpointAuthModeRules(&normalizedEndpoint)
+	service.NewEndpointService(h.config, h.proxy, h.storage).AutoConfigureEndpoint(&normalizedEndpoint, normalizedEndpoint.AutoSelect)
 	existing.APIUrl = normalizedEndpoint.APIUrl
 	existing.APIKey = normalizedEndpoint.APIKey
 	existing.AuthMode = normalizedEndpoint.AuthMode

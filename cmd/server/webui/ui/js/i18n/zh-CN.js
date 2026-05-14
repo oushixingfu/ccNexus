@@ -254,6 +254,7 @@ export default {
         urlCopied: 'URL 已复制'
     },
     transformers: {
+        auto: '自动识别',
         claude: 'Claude',
         openai: 'OpenAI',
         openai2: 'OpenAI 响应',

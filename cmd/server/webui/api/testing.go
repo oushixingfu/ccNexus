@@ -16,6 +16,11 @@ import (
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
+const (
+	endpointTestMessage   = "ping"
+	endpointTestMaxTokens = 64
+)
+
 // testEndpoint tests an endpoint's connectivity
 func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name string) {
 	if r.Method != http.MethodPost && r.Method != http.MethodGet {
@@ -87,10 +92,10 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			"messages": []map[string]interface{}{
 				{
 					"role":    "user",
-					"content": "你是什么模型?",
+					"content": endpointTestMessage,
 				},
 			},
-			"max_tokens": 16,
+			"max_tokens": endpointTestMaxTokens,
 		})
 	case "openai", "deepseek", "kimi":
 		url = providercompat.JoinBaseURLAndPath(normalizedURL, providercompat.OpenAIChatTargetPath(transformer, normalizedURL))
@@ -103,10 +108,10 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			"messages": []map[string]interface{}{
 				{
 					"role":    "user",
-					"content": "你是什么模型?",
+					"content": endpointTestMessage,
 				},
 			},
-			"max_tokens": 16,
+			"max_tokens": endpointTestMaxTokens,
 		})
 	case "openai2":
 		url = providercompat.JoinBaseURLAndPath(normalizedURL, "/v1/responses")
@@ -115,14 +120,15 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			model = providercompat.DefaultModel(transformer)
 		}
 		reqBody, err = json.Marshal(map[string]interface{}{
-			"model":  model,
-			"stream": true,
+			"model":             model,
+			"stream":            true,
+			"max_output_tokens": endpointTestMaxTokens,
 			"input": []map[string]interface{}{
 				{
 					"type": "message",
 					"role": "user",
 					"content": []map[string]interface{}{
-						{"type": "input_text", "text": "你是什么模型?"},
+						{"type": "input_text", "text": endpointTestMessage},
 					},
 				},
 			},
@@ -138,11 +144,12 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 				{
 					"parts": []map[string]interface{}{
 						{
-							"text": "你是什么模型?",
+							"text": endpointTestMessage,
 						},
 					},
 				},
 			},
+			"generationConfig": map[string]int{"maxOutputTokens": endpointTestMaxTokens},
 		})
 	default:
 		return "", fmt.Errorf("unsupported transformer: %s", endpoint.Transformer)
@@ -374,8 +381,11 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 
 // fetchModelsFromProvider fetches available models from a provider
 func (h *Handler) fetchModelsFromProvider(apiUrl, apiKey, transformer string) ([]string, error) {
-	transformer = providercompat.NormalizeTransformer(transformer)
 	apiUrl = providercompat.NormalizeBaseURL(apiUrl)
+	if transformer == "" {
+		transformer = "auto"
+	}
+	transformer = providercompat.InferEndpointTransformer(apiUrl, "", transformer)
 	var urls []string
 	var authHeader string
 

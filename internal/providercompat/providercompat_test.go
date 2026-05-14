@@ -74,6 +74,27 @@ func TestOpenAIChatTargetPathDeepSeekOfficial(t *testing.T) {
 	}
 }
 
+func TestInferEndpointTransformerFromKimiModel(t *testing.T) {
+	got := InferEndpointTransformer("https://gateway.example.com", "kimi-k2.6", "auto")
+	if got != TransformerKimi {
+		t.Fatalf("expected kimi transformer from model, got %s", got)
+	}
+}
+
+func TestInferEndpointTransformerPreservesExplicitTransformer(t *testing.T) {
+	got := InferEndpointTransformer("https://gateway.example.com", "kimi-k2.6", "openai2")
+	if got != TransformerOpenAI2 {
+		t.Fatalf("expected explicit openai2 to be preserved, got %s", got)
+	}
+}
+
+func TestInferEndpointTransformerDefaultsUnknownURLToOpenAI(t *testing.T) {
+	got := InferEndpointTransformer("https://gateway.example.com", "", "auto")
+	if got != TransformerOpenAI {
+		t.Fatalf("expected unknown custom gateway to default to openai, got %s", got)
+	}
+}
+
 func TestAdaptOpenAIChatPayloadForDeepSeek(t *testing.T) {
 	raw := []byte(`{"model":"deepseek-chat","max_completion_tokens":8,"reasoning":{"effort":"medium"}}`)
 	out := AdaptOpenAIChatPayload(raw, "deepseek", "https://api.deepseek.com", "")

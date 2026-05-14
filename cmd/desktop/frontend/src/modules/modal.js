@@ -280,7 +280,7 @@ export function showAddEndpointModal() {
     document.getElementById('endpointKey').type = 'password';
     document.getElementById('eyeIcon').innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>';
     document.getElementById('endpointAuthMode').value = 'api_key';
-    document.getElementById('endpointTransformer').value = 'claude';
+    document.getElementById('endpointTransformer').value = 'auto';
     document.getElementById('endpointModel').value = '';
     document.getElementById('endpointForceStream').checked = false;
     document.getElementById('endpointRemark').value = '';
@@ -301,7 +301,7 @@ export function showAddEndpointModalWithPreset(presetData) {
 	document.getElementById('endpointKey').type = 'password';
 	document.getElementById('eyeIcon').innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>';
 	document.getElementById('endpointAuthMode').value = presetData.authMode || 'api_key';
-	document.getElementById('endpointTransformer').value = presetData.transformer || 'claude';
+	document.getElementById('endpointTransformer').value = presetData.transformer || 'auto';
 	document.getElementById('endpointModel').value = presetData.model || '';
 	document.getElementById('endpointForceStream').checked = !!presetData.forceStream;
 	document.getElementById('endpointRemark').value = presetData.remark || '';
@@ -438,7 +438,10 @@ export function handleTransformerChange() {
     clearFetchedModels();
 
     modelRequired.style.display = 'none';
-    if (transformer === 'claude') {
+    if (transformer === 'auto') {
+        modelInput.placeholder = 'e.g., kimi-k2.6';
+        modelHelpText.textContent = t('modal.modelHelpAuto');
+    } else if (transformer === 'claude') {
         modelInput.placeholder = 'e.g., claude-3-5-sonnet-20241022';
         modelHelpText.textContent = t('modal.modelHelpClaude');
     } else if (transformer === 'openai') {

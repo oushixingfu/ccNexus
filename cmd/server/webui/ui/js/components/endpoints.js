@@ -403,9 +403,10 @@ class Endpoints {
         const cloneHiddenInput = isClone ? '<input type="hidden" name="isClone" value="true">' : '';
         const cloneFromValue = endpoint?.cloneFrom || '';
         const cloneFromInput = isClone && cloneFromValue ? `<input type="hidden" name="cloneFrom" value="${cloneFromValue}">` : '';
-        const transformer = endpoint?.transformer || 'claude';
+        const transformer = endpoint?.transformer || 'auto';
         const preferredClaudeUpstream = endpoint?.preferredClaudeUpstream || 'auto';
         const preferredOpenAIUpstream = endpoint?.preferredOpenAIUpstream || 'auto';
+        const autoSelect = endpoint ? !!endpoint.autoSelect : true;
         const supportsOpenAIResponses = endpoint ? !!endpoint.supportsOpenAIResponses : transformer === 'openai2';
         const supportsOpenAIChat = endpoint ? !!endpoint.supportsOpenAIChat : ['openai', 'deepseek', 'kimi'].includes(transformer);
         const supportsClaudeMessages = endpoint ? !!endpoint.supportsClaudeMessages : transformer === 'claude';
@@ -437,6 +438,7 @@ class Endpoints {
                             <div class="form-group">
                                 <label class="form-label">${t('endpoints.transformer')} *</label>
                                 <select class="form-select" name="transformer" required>
+                                    <option value="auto" ${transformer === 'auto' ? 'selected' : ''}>${t('transformers.auto')}</option>
                                     <option value="claude" ${transformer === 'claude' ? 'selected' : ''}>${t('transformers.claude')}</option>
                                     <option value="openai" ${transformer === 'openai' ? 'selected' : ''}>${t('transformers.openai')}</option>
                                     <option value="openai2" ${transformer === 'openai2' ? 'selected' : ''}>${t('transformers.openai2')}</option>
@@ -447,7 +449,7 @@ class Endpoints {
 	                            </div>
 	                            <div class="form-group">
 	                                <label>
-	                                    <input type="checkbox" class="form-checkbox" name="autoSelect" ${endpoint?.autoSelect ? 'checked' : ''}>
+	                                    <input type="checkbox" class="form-checkbox" name="autoSelect" ${autoSelect ? 'checked' : ''}>
 	                                    ${t('endpoints.autoSelect')}
 	                                </label>
 	                                <small class="text-muted">${t('endpoints.autoSelectHint')}</small>

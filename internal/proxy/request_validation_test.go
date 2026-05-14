@@ -293,3 +293,52 @@ func TestHandleProxyTreatsWrappedInvalidRequest500AsClientError(t *testing.T) {
 		t.Fatalf("expected no endpoint cooldown for client invalid request, got %d", cooldowns)
 	}
 }
+
+func TestHandleProxyFallsBackResponsesToKimiChatOnMissingMessages(t *testing.T) {
+	var upstreamPaths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPaths = append(upstreamPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/responses" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"field messages is required","type":"new_api_error","code":"invalid_request"}}`))
+			return
+		}
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected fallback path: %s", r.URL.Path)
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode fallback request: %v", err)
+		}
+		if body["model"] != "kimi-k2.6" {
+			t.Fatalf("expected kimi model override, got %#v", body["model"])
+		}
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-kimi","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("Kimi", upstream.URL)
+	endpoint.Model = "kimi-k2.6"
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected fallback to succeed, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if len(upstreamPaths) != 2 || upstreamPaths[0] != "/v1/responses" || upstreamPaths[1] != "/v1/chat/completions" {
+		t.Fatalf("expected responses then chat fallback, got %#v", upstreamPaths)
+	}
+	updated := p.config.GetEndpoints()[0]
+	if !updated.AutoSelect || !updated.SupportsOpenAIChat || updated.SupportsOpenAIResponses {
+		t.Fatalf("expected fallback success to persist chat capabilities, got %#v", updated)
+	}
+	if updated.Transformer != "kimi" {
+		t.Fatalf("expected fallback to persist kimi transformer, got %s", updated.Transformer)
+	}
+}

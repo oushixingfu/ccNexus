@@ -563,6 +563,8 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	forceStreamRetryEndpoints := make(map[string]bool)
+	protocolFallbackOverrides := make(map[string]string)
+	protocolFallbackTried := make(map[string]bool)
 	endpointAttempts := 0
 	advanceForFailure := func(current config.Endpoint, reason string, attemptNumber int, headers http.Header) {
 		cooled := p.markEndpointCooldownForReason(current.Name, reason, headers, obs, attemptNumber)
@@ -661,7 +663,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		fallbackKey := protocolFallbackKey(endpoint.Name, clientFormat)
 		upstreamEndpoint := endpointForClientFormat(clientFormat, endpoint)
+		protocolFallbackApplied := false
+		if fallbackTransformer := protocolFallbackOverrides[fallbackKey]; fallbackTransformer != "" {
+			upstreamEndpoint = endpoint
+			upstreamEndpoint.Transformer = fallbackTransformer
+			protocolFallbackApplied = true
+			logger.Debug("[%s] Using protocol fallback upstream transformer: client_format=%s upstream_transformer=%s", endpoint.Name, clientFormat, fallbackTransformer)
+		}
 		if upstreamEndpoint.Transformer != endpoint.Transformer {
 			logger.Debug("[%s] Auto-selected upstream transformer: client_format=%s endpoint_transformer=%s upstream_transformer=%s", endpoint.Name, clientFormat, endpoint.Transformer, upstreamEndpoint.Transformer)
 		}
@@ -816,6 +826,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			p.markCredentialSuccess(credentialID)
 			p.markRequestInactive(endpoint.Name)
 			if recordEndpointSuccess {
+				if protocolFallbackApplied {
+					p.rememberProtocolFallbackSuccess(endpoint, upstreamEndpoint.Transformer)
+				}
 				p.clearEndpointCooldown(endpoint.Name)
 				p.recordEndpointSuccessEvent(endpoint.Name)
 			}
@@ -1040,6 +1053,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			if len(logMsg) > 200 {
 				logMsg = logMsg[:200] + "..."
 			}
+			if fallbackTransformer := protocolFallbackTransformerForHTTPFailure(clientFormat, endpoint, upstreamEndpoint, transformerName, resp.StatusCode, errMsg); fallbackTransformer != "" {
+				fallbackAttemptKey := fallbackKey + "|" + fallbackTransformer
+				if !protocolFallbackTried[fallbackAttemptKey] {
+					protocolFallbackTried[fallbackAttemptKey] = true
+					protocolFallbackOverrides[fallbackKey] = fallbackTransformer
+					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, retryReasonEndpointCapability, "Upstream protocol mismatch, retrying same endpoint with %s: %s", fallbackTransformer, logMsg)
+					p.markRequestInactive(endpoint.Name)
+					endpointAttempts = 0
+					continue
+				}
+			}
 			if shouldRetryWithForcedStream(resp.StatusCode, errMsg, streamReq.Stream, transformerName) &&
 				!forceStreamRetryEndpoints[endpoint.Name] {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "force_stream_required", "Upstream requires stream=true, retrying same endpoint with forced streaming: %s", logMsg)
@@ -1134,6 +1158,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			respLogMsg = respLogMsg[:500] + "..."
 		}
 		endpointAuthFailureHandled := false
+
+		if fallbackTransformer := protocolFallbackTransformerForHTTPFailure(clientFormat, endpoint, upstreamEndpoint, transformerName, resp.StatusCode, respMsg); fallbackTransformer != "" {
+			fallbackAttemptKey := fallbackKey + "|" + fallbackTransformer
+			if !protocolFallbackTried[fallbackAttemptKey] {
+				protocolFallbackTried[fallbackAttemptKey] = true
+				protocolFallbackOverrides[fallbackKey] = fallbackTransformer
+				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, retryReasonEndpointCapability, "Upstream protocol mismatch, retrying same endpoint with %s: %s", fallbackTransformer, respLogMsg)
+				p.markRequestInactive(endpoint.Name)
+				endpointAttempts = 0
+				continue
+			}
+		}
 
 		if shouldRetryWithForcedStream(resp.StatusCode, respMsg, streamReq.Stream, transformerName) &&
 			!forceStreamRetryEndpoints[endpoint.Name] {

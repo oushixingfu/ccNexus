@@ -118,7 +118,7 @@ class Endpoints {
             testStatusIcon = '✅';
             testStatusTitle = t('endpoints.testPassed');
         } else if (testStatus === false) {
-            testStatusIcon = '❌';
+            testStatusIcon = '⚠️';
             testStatusTitle = t('endpoints.testFailed');
         }
 

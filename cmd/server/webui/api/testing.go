@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	endpointTestMessage   = "ping"
-	endpointTestMaxTokens = 64
+	endpointTestMessage   = "Reply with exactly: pong"
+	endpointTestMaxTokens = 128
 )
+
+type endpointTestAttempt struct {
+	transformer string
+}
 
 // testEndpoint tests an endpoint's connectivity
 func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name string) {
@@ -77,18 +81,113 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 		return "", authErr
 	}
 
+	attempts := buildEndpointTestAttempts(endpoint)
+	var lastErr error
+	for _, attempt := range attempts {
+		response, err := h.sendTestRequestWithTransformer(endpoint, apiKey, attempt.transformer)
+		if err == nil {
+			return response, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("unsupported transformer: %s", endpoint.Transformer)
+}
+
+func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt {
+	if endpoint == nil {
+		return nil
+	}
+
+	normalizedURL := providercompat.NormalizeBaseURL(endpoint.APIUrl)
+	transformer := providercompat.NormalizeTransformer(endpoint.Transformer)
+	if providercompat.IsAutoTransformer(transformer) {
+		transformer = providercompat.InferEndpointTransformer(endpoint.APIUrl, endpoint.Model, endpoint.Transformer)
+	}
+
+	providerTransformer := providercompat.InferProviderTransformer(endpoint.APIUrl, endpoint.Model)
+	if !providercompat.IsOpenAIChatTransformer(providerTransformer) {
+		providerTransformer = providercompat.TransformerOpenAI
+	}
+
+	attempts := make([]endpointTestAttempt, 0, 4)
+	seen := make(map[string]bool)
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		candidate = providercompat.NormalizeTransformer(candidate)
+		if candidate == "" || candidate == "auto" || seen[candidate] {
+			return
+		}
+		seen[candidate] = true
+		attempts = append(attempts, endpointTestAttempt{transformer: candidate})
+	}
+
+	switch transformer {
+	case providercompat.TransformerClaude:
+		preferred := strings.TrimSpace(endpoint.PreferredClaudeUpstream)
+		add(preferred)
+		add(providercompat.TransformerClaude)
+		if endpoint.SupportsOpenAIResponses {
+			add(providercompat.TransformerOpenAI2)
+		}
+		if endpoint.SupportsOpenAIChat {
+			add(providerTransformer)
+		}
+	case providercompat.TransformerOpenAI2:
+		preferred := strings.TrimSpace(endpoint.PreferredOpenAIUpstream)
+		add(preferred)
+		add(providercompat.TransformerOpenAI2)
+		if endpoint.SupportsOpenAIChat {
+			add(providerTransformer)
+		}
+		if endpoint.SupportsClaudeMessages {
+			add(providercompat.TransformerClaude)
+		}
+	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+		add(transformer)
+		preferred := providercompat.NormalizeTransformer(strings.TrimSpace(endpoint.PreferredOpenAIUpstream))
+		if preferred == providercompat.TransformerOpenAI2 && endpoint.SupportsOpenAIResponses {
+			add(preferred)
+		}
+		if endpoint.SupportsOpenAIResponses {
+			add(providercompat.TransformerOpenAI2)
+		}
+	case providercompat.TransformerGemini:
+		add(providercompat.TransformerGemini)
+	default:
+		add(transformer)
+	}
+
+	if len(attempts) == 0 && strings.TrimSpace(normalizedURL) != "" {
+		add(providercompat.InferEndpointTransformer(endpoint.APIUrl, endpoint.Model, endpoint.Transformer))
+	}
+	return attempts
+}
+
+// sendTestRequestWithTransformer sends a test request to an endpoint using one
+// candidate upstream protocol.
+func (h *Handler) sendTestRequestWithTransformer(endpoint *storage.Endpoint, apiKey string, transformer string) (string, error) {
 	var reqBody []byte
 	var url string
 	var err error
 
 	normalizedURL := providercompat.NormalizeBaseURL(endpoint.APIUrl)
-	transformer := providercompat.NormalizeTransformer(endpoint.Transformer)
+	transformer = providercompat.NormalizeTransformer(transformer)
 
 	switch transformer {
 	case "claude":
 		url = providercompat.JoinBaseURLAndPath(normalizedURL, "/v1/messages")
+		model := endpoint.Model
+		if model == "" {
+			model = providercompat.DefaultModel(transformer)
+		}
 		reqBody, err = json.Marshal(map[string]interface{}{
-			"model": "claude-3-5-sonnet-20241022",
+			"model": model,
 			"messages": []map[string]interface{}{
 				{
 					"role":    "user",
@@ -113,6 +212,9 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			},
 			"max_tokens": endpointTestMaxTokens,
 		})
+		if err == nil {
+			reqBody = providercompat.AdaptOpenAIChatPayload(reqBody, transformer, normalizedURL, endpoint.Thinking)
+		}
 	case "openai2":
 		url = providercompat.JoinBaseURLAndPath(normalizedURL, "/v1/responses")
 		model := endpoint.Model
@@ -120,9 +222,8 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 			model = providercompat.DefaultModel(transformer)
 		}
 		reqBody, err = json.Marshal(map[string]interface{}{
-			"model":             model,
-			"stream":            true,
-			"max_output_tokens": endpointTestMaxTokens,
+			"model":  model,
+			"stream": false,
 			"input": []map[string]interface{}{
 				{
 					"type": "message",
@@ -173,9 +274,6 @@ func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case "openai", "openai2", "deepseek", "kimi":
 		req.Header.Set("Authorization", "Bearer "+apiKey)
-		if transformer == "openai2" {
-			req.Header.Set("Accept", "text/event-stream")
-		}
 	case "gemini":
 		// Gemini uses API key in URL query parameter
 		q := req.URL.Query()

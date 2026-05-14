@@ -80,8 +80,8 @@ func (e *EndpointService) resolveProxyURLForTarget(targetURL string) string {
 
 // Test endpoint constants
 const (
-	testMessage   = "ping"
-	testMaxTokens = 64
+	testMessage   = "Reply with exactly: pong"
+	testMaxTokens = 128
 
 	codexTestClientVersion = "0.101.0"
 	codexTestUserAgent     = "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"

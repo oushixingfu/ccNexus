@@ -19,6 +19,8 @@ import (
 const (
 	defaultHealthCheckInterval = 60 * time.Second
 	healthCheckReadLimitBytes  = 256 * 1024
+	healthCheckPrompt          = "Reply with exactly: pong"
+	healthCheckMaxTokens       = 128
 )
 
 // healthCheckResult holds the outcome of a single endpoint health probe.
@@ -448,9 +450,9 @@ func (p *Proxy) buildHealthCheckRequest(endpoint *config.Endpoint) ([]byte, stri
 		urlPath = "/v1/messages"
 		body := map[string]interface{}{
 			"model":      model,
-			"max_tokens": 1,
+			"max_tokens": healthCheckMaxTokens,
 			"messages": []map[string]interface{}{
-				{"role": "user", "content": "ping"},
+				{"role": "user", "content": healthCheckPrompt},
 			},
 		}
 		if endpoint.ForceStream {
@@ -461,9 +463,9 @@ func (p *Proxy) buildHealthCheckRequest(endpoint *config.Endpoint) ([]byte, stri
 		urlPath = providercompat.OpenAIChatTargetPath(transformer, normalizedURL)
 		body := map[string]interface{}{
 			"model":      model,
-			"max_tokens": 1,
+			"max_tokens": healthCheckMaxTokens,
 			"messages": []map[string]interface{}{
-				{"role": "user", "content": "ping"},
+				{"role": "user", "content": healthCheckPrompt},
 			},
 		}
 		if effort := normalizeEndpointThinking(endpoint.Thinking); effort != "" {
@@ -484,7 +486,7 @@ func (p *Proxy) buildHealthCheckRequest(endpoint *config.Endpoint) ([]byte, stri
 					"type": "message",
 					"role": "user",
 					"content": []map[string]interface{}{
-						{"type": "input_text", "text": "ping"},
+						{"type": "input_text", "text": healthCheckPrompt},
 					},
 				},
 			},
@@ -506,7 +508,7 @@ func (p *Proxy) buildHealthCheckRequest(endpoint *config.Endpoint) ([]byte, stri
 			"contents": []map[string]interface{}{
 				{
 					"parts": []map[string]interface{}{
-						{"text": "ping"},
+						{"text": healthCheckPrompt},
 					},
 				},
 			},

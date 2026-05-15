@@ -346,6 +346,7 @@ func AdaptOpenAIChatPayload(payload []byte, transformer, baseURL, thinking strin
 		}
 		delete(body, "max_completion_tokens")
 	}
+	normalizeOpenAIChatRolesForProvider(body, provider)
 
 	endpointThinking := normalizeThinking(thinking)
 	requestEffort := ""
@@ -384,6 +385,29 @@ func AdaptOpenAIChatPayload(payload []byte, transformer, baseURL, thinking strin
 		return payload
 	}
 	return updated
+}
+
+func normalizeOpenAIChatRolesForProvider(body map[string]interface{}, provider string) {
+	switch provider {
+	case ProviderDeepSeek, ProviderKimi:
+	default:
+		return
+	}
+
+	messages, ok := body["messages"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(stringFromMap(message, "role")))
+		if role == "developer" {
+			message["role"] = "system"
+		}
+	}
 }
 
 func applyDeepSeekThinking(body map[string]interface{}, endpointThinking, requestEffort string) {

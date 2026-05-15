@@ -314,6 +314,17 @@ func TestHandleProxyFallsBackResponsesToKimiChatOnMissingMessages(t *testing.T) 
 		if body["model"] != "kimi-k2.6" {
 			t.Fatalf("expected kimi model override, got %#v", body["model"])
 		}
+		messages, ok := body["messages"].([]interface{})
+		if !ok || len(messages) < 2 {
+			t.Fatalf("expected fallback chat messages, got %#v", body["messages"])
+		}
+		first, ok := messages[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected first fallback message object, got %#v", messages[0])
+		}
+		if first["role"] != "system" {
+			t.Fatalf("expected Kimi fallback to convert developer role to system, got %#v", first["role"])
+		}
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-kimi","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
 	}))
 	defer upstream.Close()
@@ -322,7 +333,7 @@ func TestHandleProxyFallsBackResponsesToKimiChatOnMissingMessages(t *testing.T) 
 	endpoint.Model = "kimi-k2.6"
 	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"policy"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 

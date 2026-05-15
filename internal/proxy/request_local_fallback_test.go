@@ -577,7 +577,7 @@ func TestClientCanceledRequestDoesNotPersistFailureStatus(t *testing.T) {
 	_ = primaryHits
 }
 
-func TestStreamingUpstreamErrorCoolsEndpointForNextRequest(t *testing.T) {
+func TestStreamingUpstreamErrorRetainsCurrentEndpointForNextRequest(t *testing.T) {
 	logger.GetLogger().Clear()
 	logger.GetLogger().SetMinLevel(logger.DEBUG)
 
@@ -587,6 +587,15 @@ func TestStreamingUpstreamErrorCoolsEndpointForNextRequest(t *testing.T) {
 		switch req.URL.Host {
 		case "primary.example":
 			primaryHits++
+			if primaryHits > 1 {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"id":"resp-primary","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)),
+					Request:    req,
+				}, nil
+			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
@@ -636,28 +645,27 @@ func TestStreamingUpstreamErrorCoolsEndpointForNextRequest(t *testing.T) {
 	p.cooldownMu.RLock()
 	cooldown, cooled := p.endpointCooldowns["Primary"]
 	p.cooldownMu.RUnlock()
-	if !cooled || cooldown.Reason != "upstream_stream_error" {
-		t.Fatalf("expected Primary cooldown for upstream_stream_error, got cooled=%v cooldown=%#v", cooled, cooldown)
+	if cooled {
+		t.Fatalf("did not expect transient stream error to cooldown Primary, got cooldown=%#v", cooldown)
 	}
-	if got := p.GetCurrentEndpointName(); got != "Fallback" {
-		t.Fatalf("expected global current endpoint to auto-switch to Fallback after stream error, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "Primary" {
+		t.Fatalf("expected transient stream error to retain current endpoint Primary, got %q", got)
 	}
-	if len(currentEvents) != 1 {
-		t.Fatalf("expected one current endpoint event, got %#v", currentEvents)
-	}
-	if event := currentEvents[0]; event.PreviousName != "Primary" || event.Name != "Fallback" || event.Reason != "failure" {
-		t.Fatalf("expected failure current endpoint event Primary -> Fallback, got %#v", event)
+	if len(currentEvents) != 0 {
+		t.Fatalf("expected no current endpoint events, got %#v", currentEvents)
 	}
 
 	logs := joinedProxyLogs()
 	for _, want := range []string{
-		"[AUTO SWITCH] Primary",
-		"Fallback",
-		"switch_reason=upstream_stream_error",
+		"Retaining current endpoint after transient streaming error",
+		"retry_reason=upstream_stream_error",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("expected logs to contain %q, got logs:\n%s", want, logs)
 		}
+	}
+	if strings.Contains(logs, "[AUTO SWITCH]") {
+		t.Fatalf("did not expect auto switch log after transient stream error, got logs:\n%s", logs)
 	}
 
 	nextReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":[]}`))
@@ -667,16 +675,16 @@ func TestStreamingUpstreamErrorCoolsEndpointForNextRequest(t *testing.T) {
 	p.handleProxy(nextRec, nextReq)
 
 	if nextRec.Code != http.StatusOK {
-		t.Fatalf("expected next request to succeed on fallback, got status=%d body=%q", nextRec.Code, nextRec.Body.String())
+		t.Fatalf("expected next request to succeed on recovered primary, got status=%d body=%q", nextRec.Code, nextRec.Body.String())
 	}
-	if primaryHits != 1 {
-		t.Fatalf("expected cooled Primary to be skipped on next request, got primary hits=%d", primaryHits)
+	if primaryHits != 2 {
+		t.Fatalf("expected next request to retry retained Primary, got primary hits=%d", primaryHits)
 	}
-	if fallbackHits != 1 {
-		t.Fatalf("expected next request to use Fallback once, got %d", fallbackHits)
+	if fallbackHits != 0 {
+		t.Fatalf("expected next request not to use Fallback, got %d", fallbackHits)
 	}
-	if got := nextRec.Header().Get(headerCCNexusEndpoint); got != "Fallback" {
-		t.Fatalf("expected next request endpoint Fallback, got %q", got)
+	if got := nextRec.Header().Get(headerCCNexusEndpoint); got != "Primary" {
+		t.Fatalf("expected next request endpoint Primary, got %q", got)
 	}
 }
 

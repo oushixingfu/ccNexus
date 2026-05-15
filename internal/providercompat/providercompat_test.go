@@ -171,6 +171,27 @@ func TestAdaptOpenAIChatPayloadForDeepSeekXHighMapsToMax(t *testing.T) {
 	}
 }
 
+func TestAdaptOpenAIChatPayloadForKimiConvertsDeveloperRole(t *testing.T) {
+	raw := []byte(`{"model":"kimi-k2.6","messages":[{"role":"developer","content":"policy"},{"role":"user","content":"hi"}]}`)
+	out := AdaptOpenAIChatPayload(raw, "kimi", "https://1052.cc.cd:5005", "")
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	messages, ok := payload["messages"].([]interface{})
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected two messages, got %#v", payload["messages"])
+	}
+	first, ok := messages[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected first message object, got %#v", messages[0])
+	}
+	if first["role"] != "system" {
+		t.Fatalf("expected developer role to be converted to system, got %#v", first["role"])
+	}
+}
+
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

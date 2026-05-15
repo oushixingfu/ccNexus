@@ -144,6 +144,10 @@ func shouldRetryWithForcedStream(statusCode int, body string, clientRequestedStr
 		(strings.Contains(lower, "bad_response_body") && strings.Contains(lower, "invalid character"))
 }
 
+func shouldRetainCurrentEndpointAfterStreamingFailure(reason string) bool {
+	return sanitizeLogField(reason) == streamFinishUpstreamStreamError
+}
+
 func isUpstreamInvalidRequestHTTPFailure(statusCode int, body string) bool {
 	if statusCode < http.StatusInternalServerError {
 		return false

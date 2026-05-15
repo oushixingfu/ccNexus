@@ -82,6 +82,48 @@ func TestBuildHealthCheckRequestOpenAIForceStreamUsesStream(t *testing.T) {
 	}
 }
 
+func TestBuildHealthCheckRequestKimiUsesSemanticProbeBudget(t *testing.T) {
+	cfg := config.DefaultConfig()
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+	endpoint := &config.Endpoint{
+		Name:        "kimi",
+		APIUrl:      "https://1052.cc.cd:5005",
+		APIKey:      "test-key",
+		AuthMode:    config.AuthModeAPIKey,
+		Transformer: "kimi",
+		Model:       "kimi-k2.6",
+		Enabled:     true,
+	}
+
+	bodyBytes, targetURL, err := p.buildHealthCheckRequest(endpoint)
+	if err != nil {
+		t.Fatalf("buildHealthCheckRequest failed: %v", err)
+	}
+	if targetURL != "https://1052.cc.cd:5005/v1/chat/completions" {
+		t.Fatalf("unexpected target URL: %s", targetURL)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		t.Fatalf("unmarshal request body failed: %v", err)
+	}
+	if body["max_tokens"] != float64(healthCheckMaxTokens) {
+		t.Fatalf("expected max_tokens=%d, got %#v", healthCheckMaxTokens, body["max_tokens"])
+	}
+	messages, ok := body["messages"].([]interface{})
+	if !ok || len(messages) != 1 {
+		t.Fatalf("expected one message, got %#v", body["messages"])
+	}
+	first, ok := messages[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected message object, got %#v", messages[0])
+	}
+	if first["content"] != healthCheckPrompt {
+		t.Fatalf("expected semantic health prompt, got %#v", first["content"])
+	}
+}
+
 func TestHealthCheckRecoveryDoesNotAutoSwitchWhenDeprioritize(t *testing.T) {
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()

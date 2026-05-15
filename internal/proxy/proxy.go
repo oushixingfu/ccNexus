@@ -951,10 +951,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, retryReason, "Streaming response failed: %v", streamResult.Err)
+				retainCurrentEndpoint := shouldRetainCurrentEndpointAfterStreamingFailure(retryReason)
 				if streamResult.ClientTerminalSuccess {
 					p.recordEndpointError(endpoint.Name, retryReason)
-					p.markEndpointCooldownForReason(endpoint.Name, retryReason, resp.Header, obs, attemptNumber)
-					if !useSpecificEndpoint {
+					if retainCurrentEndpoint {
+						logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, retryReason, "Retaining current endpoint after transient streaming error")
+					} else {
+						p.markEndpointCooldownForReason(endpoint.Name, retryReason, resp.Header, obs, attemptNumber)
+					}
+					if !useSpecificEndpoint && !retainCurrentEndpoint {
 						p.switchCurrentEndpointAfterFailure(endpoint, retryReason, obs, attemptNumber)
 					}
 					recordClientSuccess(inputTokens, outputTokens, false)
@@ -965,9 +970,13 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				p.markCredentialFailure(credentialID, 0, streamResult.Err.Error())
 				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
 				p.recordEndpointError(endpoint.Name, retryReason)
-				p.markEndpointCooldownForReason(endpoint.Name, retryReason, resp.Header, obs, attemptNumber)
+				if retainCurrentEndpoint {
+					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, http.StatusOK, retryReason, "Retaining current endpoint after transient streaming error")
+				} else {
+					p.markEndpointCooldownForReason(endpoint.Name, retryReason, resp.Header, obs, attemptNumber)
+				}
 				p.markRequestInactive(endpoint.Name)
-				if !useSpecificEndpoint {
+				if !useSpecificEndpoint && !retainCurrentEndpoint {
 					p.switchCurrentEndpointAfterFailure(endpoint, retryReason, obs, attemptNumber)
 				}
 				recordClientError(endpoint.Name)

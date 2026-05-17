@@ -612,11 +612,9 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 			result.Reason = streamFinishDownstreamWriteFailed
 			result.Err = writeErr
 		} else {
-			result.Completed = false
-			result.ClientTerminalSuccess = true
-			result.Reason = streamFinishUpstreamStreamError
-			result.Err = fmt.Errorf("stream closed before response.completed")
-			logger.Warn("[%s] Upstream stream closed before response.completed; sent synthetic completion and marked endpoint failed", endpoint.Name)
+			result.Completed = true
+			result.Reason = streamFinishCompleted
+			logger.Warn("[%s] Upstream stream closed before response.completed; sent synthetic completion", endpoint.Name)
 		}
 	}
 	if scannerErr == nil &&

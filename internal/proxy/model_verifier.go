@@ -198,6 +198,9 @@ func (v *modelVerifier) verifyGemini(endpoint config.Endpoint, modelID string) m
 
 func classifyVerificationHTTPFailure(statusCode int, body string) modelVerificationResult {
 	lowerBody := strings.ToLower(strings.TrimSpace(body))
+	if isTransientVerificationFailureBody(lowerBody) {
+		return modelVerificationResult{Status: storage.EndpointModelStatusFailed, FailureKind: "upstream_error", FailureMessage: body, RetryTTL: 10 * time.Minute}
+	}
 	if isUnsupportedModelHTTPFailure(statusCode, body) {
 		return modelVerificationResult{Status: storage.EndpointModelStatusFailed, FailureKind: "unsupported_model", FailureMessage: body, RetryTTL: 7 * 24 * time.Hour}
 	}
@@ -232,6 +235,9 @@ func isUnsupportedModelHTTPFailure(statusCode int, body string) bool {
 	if lowerBody == "" {
 		return false
 	}
+	if isTransientVerificationFailureBody(lowerBody) {
+		return false
+	}
 
 	for _, marker := range []string{
 		"model_not_found",
@@ -254,6 +260,30 @@ func isUnsupportedModelHTTPFailure(statusCode int, body string) bool {
 	if strings.Contains(lowerBody, "model") &&
 		(strings.Contains(lowerBody, "not supported") || strings.Contains(lowerBody, "unsupported")) {
 		return true
+	}
+	return false
+}
+
+func isTransientVerificationFailureBody(lowerBody string) bool {
+	lowerBody = strings.ToLower(strings.TrimSpace(lowerBody))
+	if lowerBody == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"database is locked",
+		"sqlite_busy",
+		"cannot start a transaction",
+		"temporarily unavailable",
+		"temporary upstream failure",
+		"upstream timeout",
+		"timed out",
+		"timeout",
+		"connection reset",
+		"stream error",
+	} {
+		if strings.Contains(lowerBody, marker) {
+			return true
+		}
 	}
 	return false
 }

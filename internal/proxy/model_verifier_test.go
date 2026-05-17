@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/storage"
@@ -46,6 +47,16 @@ func TestVerifyEndpointModelClassifiesUnsupportedModel(t *testing.T) {
 	result := verifier.verifyEndpointModel(config.Endpoint{Name: "openai", APIUrl: upstream.URL, APIKey: "test-key", AuthMode: config.AuthModeAPIKey, Transformer: "openai"}, "missing-model")
 	if result.FailureKind != "unsupported_model" || result.Status != storage.EndpointModelStatusFailed {
 		t.Fatalf("unexpected unsupported result: %#v", result)
+	}
+}
+
+func TestVerifyEndpointModelTreatsTransientDatabaseLockAsUpstreamError(t *testing.T) {
+	result := classifyVerificationHTTPFailure(http.StatusInternalServerError, `{"error":{"message":"database is locked (SQLITE_BUSY): model_not_found while routing request"}}`)
+	if result.FailureKind == "unsupported_model" || result.RetryTTL >= 24*time.Hour {
+		t.Fatalf("expected transient upstream failure, got %#v", result)
+	}
+	if isUnsupportedModelHTTPFailure(http.StatusInternalServerError, result.FailureMessage) {
+		t.Fatalf("expected transient failure not to be treated as unsupported model")
 	}
 }
 

@@ -155,12 +155,17 @@ func applyProtocolSuccessToEndpoint(endpoint *config.Endpoint, upstreamTransform
 	}
 	before := *endpoint
 	endpoint.AutoSelect = true
-	switch providercompat.NormalizeTransformer(upstreamTransformer) {
+	normalized := providercompat.NormalizeTransformer(upstreamTransformer)
+	switch normalized {
 	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		endpoint.Transformer = providercompat.NormalizeTransformer(upstreamTransformer)
 		endpoint.SupportsOpenAIChat = true
-		endpoint.SupportsOpenAIResponses = false
-		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+		if shouldPreserveResponsesAfterChatSuccess(before.Transformer, before.SupportsOpenAIResponses, before.APIUrl, before.Model) {
+			endpoint.SupportsOpenAIResponses = true
+		} else {
+			endpoint.Transformer = normalized
+			endpoint.SupportsOpenAIResponses = false
+			endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+		}
 	case providercompat.TransformerOpenAI2:
 		endpoint.SupportsOpenAIResponses = true
 		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2
@@ -178,6 +183,18 @@ func applyProtocolSuccessToEndpoint(endpoint *config.Endpoint, upstreamTransform
 		endpoint.SupportsClaudeMessages != before.SupportsClaudeMessages ||
 		endpoint.PreferredOpenAIUpstream != before.PreferredOpenAIUpstream ||
 		endpoint.PreferredClaudeUpstream != before.PreferredClaudeUpstream
+}
+
+func shouldPreserveResponsesAfterChatSuccess(transformer string, supportsResponses bool, apiURL string, model string) bool {
+	if supportsResponses {
+		return true
+	}
+	native := providercompat.NormalizeTransformer(transformer)
+	if native != providercompat.TransformerOpenAI2 {
+		return false
+	}
+	inferred := providercompat.NormalizeTransformer(providercompat.InferProviderTransformer(apiURL, model))
+	return !providercompat.IsOpenAIChatTransformer(inferred)
 }
 
 func (p *Proxy) persistProtocolSuccess(endpointName string, upstreamTransformer string) {
@@ -207,12 +224,17 @@ func applyProtocolSuccessToStorageEndpoint(endpoint *storage.Endpoint, upstreamT
 	}
 	before := *endpoint
 	endpoint.AutoSelect = true
-	switch providercompat.NormalizeTransformer(upstreamTransformer) {
+	normalized := providercompat.NormalizeTransformer(upstreamTransformer)
+	switch normalized {
 	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		endpoint.Transformer = providercompat.NormalizeTransformer(upstreamTransformer)
 		endpoint.SupportsOpenAIChat = true
-		endpoint.SupportsOpenAIResponses = false
-		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+		if shouldPreserveResponsesAfterChatSuccess(before.Transformer, before.SupportsOpenAIResponses, before.APIUrl, before.Model) {
+			endpoint.SupportsOpenAIResponses = true
+		} else {
+			endpoint.Transformer = normalized
+			endpoint.SupportsOpenAIResponses = false
+			endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+		}
 	case providercompat.TransformerOpenAI2:
 		endpoint.SupportsOpenAIResponses = true
 		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2

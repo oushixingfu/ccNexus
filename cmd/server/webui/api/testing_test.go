@@ -225,15 +225,15 @@ func TestEndpointTestPersistsChatFallbackForResponsesOnlyGateway(t *testing.T) {
 		t.Fatalf("expected one endpoint, got %d", len(endpoints))
 	}
 	updated := endpoints[0]
-	if updated.Transformer != "openai" || !updated.SupportsOpenAIChat || updated.SupportsOpenAIResponses {
-		t.Fatalf("expected chat fallback to be persisted, got transformer=%q chat=%t responses=%t",
+	if updated.Transformer != "openai2" || !updated.SupportsOpenAIChat || !updated.SupportsOpenAIResponses {
+		t.Fatalf("expected chat fallback to add chat support without disabling responses, got transformer=%q chat=%t responses=%t",
 			updated.Transformer,
 			updated.SupportsOpenAIChat,
 			updated.SupportsOpenAIResponses,
 		)
 	}
-	if updated.PreferredOpenAIUpstream != "openai" {
-		t.Fatalf("expected preferred OpenAI upstream openai, got %q", updated.PreferredOpenAIUpstream)
+	if updated.PreferredOpenAIUpstream != "" {
+		t.Fatalf("expected preferred OpenAI upstream to remain automatic, got %q", updated.PreferredOpenAIUpstream)
 	}
 }
 

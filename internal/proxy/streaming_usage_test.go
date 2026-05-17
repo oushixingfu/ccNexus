@@ -260,7 +260,7 @@ func TestHandleStreamingResponseAppendsDoneAfterResponsesCompletedEOF(t *testing
 	}
 }
 
-func TestHandleStreamingResponseMarksEOFBeforeResponsesCompletedAsFailure(t *testing.T) {
+func TestHandleStreamingResponseTreatsEOFBeforeResponsesCompletedAsSyntheticSuccess(t *testing.T) {
 	cfg := config.DefaultConfig()
 	endpoint := config.Endpoint{
 		Name:        "OpenAI2",
@@ -302,11 +302,11 @@ func TestHandleStreamingResponseMarksEOFBeforeResponsesCompletedAsFailure(t *tes
 		nil,
 	)
 
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "stream closed before response.completed") {
-		t.Fatalf("expected stream closed before response.completed failure, got result=%#v", result)
+	if result.Err != nil {
+		t.Fatalf("expected synthetic completion after semantic EOF to succeed, got result=%#v", result)
 	}
-	if result.Reason != streamFinishUpstreamStreamError {
-		t.Fatalf("expected upstream stream error reason, got %q", result.Reason)
+	if result.Reason != streamFinishCompleted || !result.Completed {
+		t.Fatalf("expected completed result after synthetic completion, got %#v", result)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, `"type":"response.completed"`) || !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("expected synthetic terminal events for client compatibility, got %q", body)

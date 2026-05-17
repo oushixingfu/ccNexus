@@ -515,12 +515,17 @@ func applyEndpointTestProtocolSuccess(endpoint *storage.Endpoint, transformer st
 	if !endpoint.AutoSelect {
 		return false
 	}
-	switch providercompat.NormalizeTransformer(transformer) {
+	normalized := providercompat.NormalizeTransformer(transformer)
+	switch normalized {
 	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		endpoint.Transformer = providercompat.NormalizeTransformer(transformer)
 		endpoint.SupportsOpenAIChat = true
-		endpoint.SupportsOpenAIResponses = false
-		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+		if shouldPreserveEndpointTestResponsesAfterChatSuccess(before.Transformer, before.SupportsOpenAIResponses, before.APIUrl, before.Model) {
+			endpoint.SupportsOpenAIResponses = true
+		} else {
+			endpoint.Transformer = normalized
+			endpoint.SupportsOpenAIResponses = false
+			endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+		}
 	case providercompat.TransformerOpenAI2:
 		endpoint.SupportsOpenAIResponses = true
 		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2
@@ -538,6 +543,18 @@ func applyEndpointTestProtocolSuccess(endpoint *storage.Endpoint, transformer st
 		endpoint.SupportsClaudeMessages != before.SupportsClaudeMessages ||
 		endpoint.PreferredOpenAIUpstream != before.PreferredOpenAIUpstream ||
 		endpoint.PreferredClaudeUpstream != before.PreferredClaudeUpstream
+}
+
+func shouldPreserveEndpointTestResponsesAfterChatSuccess(transformer string, supportsResponses bool, apiURL string, model string) bool {
+	if supportsResponses {
+		return true
+	}
+	native := providercompat.NormalizeTransformer(transformer)
+	if native != providercompat.TransformerOpenAI2 {
+		return false
+	}
+	inferred := providercompat.NormalizeTransformer(providercompat.InferProviderTransformer(apiURL, model))
+	return !providercompat.IsOpenAIChatTransformer(inferred)
 }
 
 func isEventStreamResponse(contentType string, body []byte) bool {

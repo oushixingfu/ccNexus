@@ -173,3 +173,27 @@ func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 		t.Fatalf("expected negative cooldown to normalize to default, got %d", failover.Cooldowns.QuotaExhaustedSec)
 	}
 }
+
+func TestReplaceFromUpdatesConfigWithoutCopyingLock(t *testing.T) {
+	current := DefaultConfig()
+	current.UpdatePort(3021)
+	current.UpdateEndpoints([]Endpoint{{Name: "old", APIUrl: "https://old.example.com", APIKey: "sk-old", AuthMode: AuthModeAPIKey, Enabled: true, Transformer: "openai", Model: "gpt-4"}})
+
+	next := DefaultConfig()
+	next.UpdatePort(3022)
+	next.UpdateRoutingStrategy(RoutingStrategyClaude)
+	next.UpdateEndpoints([]Endpoint{{Name: "new", APIUrl: "https://new.example.com", APIKey: "sk-new", AuthMode: AuthModeAPIKey, Enabled: true, Transformer: "openai2", Model: "gpt-5.5"}})
+
+	current.ReplaceFrom(next)
+
+	if got := current.GetPort(); got != 3022 {
+		t.Fatalf("expected replaced port 3022, got %d", got)
+	}
+	if got := current.GetRoutingStrategy(); got != RoutingStrategyClaude {
+		t.Fatalf("expected replaced routing strategy %q, got %q", RoutingStrategyClaude, got)
+	}
+	endpoints := current.GetEndpoints()
+	if len(endpoints) != 1 || endpoints[0].Name != "new" || endpoints[0].Model != "gpt-5.5" {
+		t.Fatalf("expected replaced endpoints, got %#v", endpoints)
+	}
+}

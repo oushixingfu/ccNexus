@@ -437,6 +437,173 @@ func DefaultConfig() *Config {
 	}
 }
 
+// ReplaceFrom replaces c's configuration fields from src without copying the
+// embedded mutex. This is intended for reload paths that keep the same Config
+// pointer shared by services.
+func (c *Config) ReplaceFrom(src *Config) {
+	if c == nil || src == nil || c == src {
+		return
+	}
+
+	snapshot := src.snapshot()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.Port = snapshot.Port
+	c.PortLocked = snapshot.PortLocked
+	c.BasicAuthEnabled = snapshot.BasicAuthEnabled
+	c.BasicAuthUsername = snapshot.BasicAuthUsername
+	c.BasicAuthPassword = snapshot.BasicAuthPassword
+	c.Endpoints = snapshot.Endpoints
+	c.LogLevel = snapshot.LogLevel
+	c.Language = snapshot.Language
+	c.Theme = snapshot.Theme
+	c.ThemeAuto = snapshot.ThemeAuto
+	c.AutoLightTheme = snapshot.AutoLightTheme
+	c.AutoDarkTheme = snapshot.AutoDarkTheme
+	c.WindowWidth = snapshot.WindowWidth
+	c.WindowHeight = snapshot.WindowHeight
+	c.CloseWindowBehavior = snapshot.CloseWindowBehavior
+	c.ClaudeNotificationEnabled = snapshot.ClaudeNotificationEnabled
+	c.ClaudeNotificationType = snapshot.ClaudeNotificationType
+	c.ModelsCacheTTL = snapshot.ModelsCacheTTL
+	c.ModelsCacheRefreshEnabled = snapshot.ModelsCacheRefreshEnabled
+	c.RoutingStrategy = snapshot.RoutingStrategy
+	c.WebDAV = snapshot.WebDAV
+	c.Backup = snapshot.Backup
+	c.Update = snapshot.Update
+	c.Terminal = snapshot.Terminal
+	c.Proxy = snapshot.Proxy
+	c.CodexProxy = snapshot.CodexProxy
+	c.Failover = snapshot.Failover
+}
+
+type configSnapshot struct {
+	Port                      int
+	PortLocked                bool
+	BasicAuthEnabled          bool
+	BasicAuthUsername         string
+	BasicAuthPassword         string
+	Endpoints                 []Endpoint
+	LogLevel                  int
+	Language                  string
+	Theme                     string
+	ThemeAuto                 bool
+	AutoLightTheme            string
+	AutoDarkTheme             string
+	WindowWidth               int
+	WindowHeight              int
+	CloseWindowBehavior       string
+	ClaudeNotificationEnabled bool
+	ClaudeNotificationType    string
+	ModelsCacheTTL            int
+	ModelsCacheRefreshEnabled bool
+	RoutingStrategy           string
+	WebDAV                    *WebDAVConfig
+	Backup                    *BackupConfig
+	Update                    *UpdateConfig
+	Terminal                  *TerminalConfig
+	Proxy                     *ProxyConfig
+	CodexProxy                *ProxyConfig
+	Failover                  *FailoverConfig
+}
+
+func (c *Config) snapshot() configSnapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return configSnapshot{
+		Port:                      c.Port,
+		PortLocked:                c.PortLocked,
+		BasicAuthEnabled:          c.BasicAuthEnabled,
+		BasicAuthUsername:         c.BasicAuthUsername,
+		BasicAuthPassword:         c.BasicAuthPassword,
+		Endpoints:                 cloneEndpoints(c.Endpoints),
+		LogLevel:                  c.LogLevel,
+		Language:                  c.Language,
+		Theme:                     c.Theme,
+		ThemeAuto:                 c.ThemeAuto,
+		AutoLightTheme:            c.AutoLightTheme,
+		AutoDarkTheme:             c.AutoDarkTheme,
+		WindowWidth:               c.WindowWidth,
+		WindowHeight:              c.WindowHeight,
+		CloseWindowBehavior:       c.CloseWindowBehavior,
+		ClaudeNotificationEnabled: c.ClaudeNotificationEnabled,
+		ClaudeNotificationType:    c.ClaudeNotificationType,
+		ModelsCacheTTL:            c.ModelsCacheTTL,
+		ModelsCacheRefreshEnabled: c.ModelsCacheRefreshEnabled,
+		RoutingStrategy:           c.RoutingStrategy,
+		WebDAV:                    cloneWebDAVConfig(c.WebDAV),
+		Backup:                    cloneBackupConfig(c.Backup),
+		Update:                    cloneUpdateConfig(c.Update),
+		Terminal:                  cloneTerminalConfig(c.Terminal),
+		Proxy:                     cloneProxyConfig(c.Proxy),
+		CodexProxy:                cloneProxyConfig(c.CodexProxy),
+		Failover:                  NormalizeFailoverConfig(c.Failover),
+	}
+}
+
+func cloneEndpoints(src []Endpoint) []Endpoint {
+	if src == nil {
+		return nil
+	}
+	dst := make([]Endpoint, len(src))
+	copy(dst, src)
+	return dst
+}
+
+func cloneWebDAVConfig(src *WebDAVConfig) *WebDAVConfig {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	return &dst
+}
+
+func cloneBackupConfig(src *BackupConfig) *BackupConfig {
+	if src == nil {
+		return nil
+	}
+	dst := &BackupConfig{Provider: src.Provider}
+	if src.Local != nil {
+		local := *src.Local
+		dst.Local = &local
+	}
+	if src.S3 != nil {
+		s3 := *src.S3
+		dst.S3 = &s3
+	}
+	return dst
+}
+
+func cloneUpdateConfig(src *UpdateConfig) *UpdateConfig {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	return &dst
+}
+
+func cloneTerminalConfig(src *TerminalConfig) *TerminalConfig {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	if src.ProjectDirs != nil {
+		dst.ProjectDirs = append([]string(nil), src.ProjectDirs...)
+	}
+	return &dst
+}
+
+func cloneProxyConfig(src *ProxyConfig) *ProxyConfig {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	return &dst
+}
+
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	c.mu.Lock()

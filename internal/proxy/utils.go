@@ -10,15 +10,16 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/providercompat"
 	"github.com/lich0821/ccNexus/internal/tokencount"
 )
 
 // normalizeAPIUrl ensures the API URL has a protocol prefix
 func normalizeAPIUrl(apiUrl string) string {
 	if !strings.HasPrefix(apiUrl, "http://") && !strings.HasPrefix(apiUrl, "https://") {
-		return "https://" + apiUrl
+		return providercompat.ResolveOutboundBaseURL("https://" + apiUrl)
 	}
-	return apiUrl
+	return providercompat.ResolveOutboundBaseURL(apiUrl)
 }
 
 func cloneEndpoints(endpoints []config.Endpoint) []config.Endpoint {

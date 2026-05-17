@@ -3,10 +3,13 @@ package providercompat
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strings"
+	"sync"
 )
 
 const (
@@ -22,6 +25,11 @@ const (
 )
 
 const errorBodyMaxChars = 512
+
+var (
+	dockerHostLoopbackOnce    sync.Once
+	dockerHostLoopbackEnabled bool
+)
 
 var compatSuffixes = []string{
 	"/api/claudecode",
@@ -235,8 +243,48 @@ func NormalizeBaseURL(raw string) string {
 	return trimmed
 }
 
+func ResolveOutboundBaseURL(raw string) string {
+	return resolveLoopbackBaseURLForContainer(NormalizeBaseURL(raw), shouldUseDockerHostLoopback())
+}
+
+func resolveLoopbackBaseURLForContainer(baseURL string, enabled bool) string {
+	if !enabled {
+		return baseURL
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed == nil {
+		return baseURL
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return baseURL
+	}
+
+	if port := parsed.Port(); port != "" {
+		parsed.Host = net.JoinHostPort("host.docker.internal", port)
+	} else {
+		parsed.Host = "host.docker.internal"
+	}
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func shouldUseDockerHostLoopback() bool {
+	dockerHostLoopbackOnce.Do(func() {
+		if _, err := os.Stat("/.dockerenv"); err != nil {
+			return
+		}
+		if _, err := net.LookupHost("host.docker.internal"); err != nil {
+			return
+		}
+		dockerHostLoopbackEnabled = true
+	})
+	return dockerHostLoopbackEnabled
+}
+
 func JoinBaseURLAndPath(baseURL, targetPath string) string {
-	base := NormalizeBaseURL(baseURL)
+	base := ResolveOutboundBaseURL(baseURL)
 	return fmt.Sprintf("%s%s", base, NormalizeTargetPathForBaseURL(base, targetPath))
 }
 

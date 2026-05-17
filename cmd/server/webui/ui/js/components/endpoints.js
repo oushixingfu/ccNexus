@@ -479,10 +479,10 @@ class Endpoints {
             const isClone = !!document.querySelector('input[name="isClone"]');
             this.saveEndpoint(isEdit, endpoint?.name, isClone);
         });
-        document.getElementById('fetch-models-btn').addEventListener('click', () => this.fetchModels());
+        document.getElementById('fetch-models-btn').addEventListener('click', () => this.fetchModels(isEdit ? endpoint.name : ''));
     }
 
-    async fetchModels() {
+    async fetchModels(endpointName = '') {
         const apiUrlInput = document.querySelector('input[name="apiUrl"]');
         const apiKeyInput = document.querySelector('input[name="apiKey"]');
         const modelInput = document.getElementById('model-input');
@@ -491,7 +491,7 @@ class Endpoints {
         const apiUrl = apiUrlInput.value.trim();
         const apiKey = apiKeyInput.value.trim();
 
-        if (!apiUrl || !apiKey || apiKey === '****') {
+        if (!apiUrl || ((!apiKey || apiKey === '****') && !endpointName)) {
             notifications.error(t('endpoints.enterApiUrlAndKey'));
             return;
         }
@@ -500,7 +500,7 @@ class Endpoints {
             fetchBtn.disabled = true;
             fetchBtn.textContent = 'Fetching...';
 
-            const result = await api.fetchModels(apiUrl, apiKey, 'auto');
+            const result = await api.fetchModels(apiUrl, apiKey, 'auto', endpointName);
 
             if (result.models && result.models.length > 0) {
                 // Show model selection modal

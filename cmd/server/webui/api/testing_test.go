@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -98,5 +100,96 @@ func TestSendTestRequestUsesKimiPromptAndTokenBudget(t *testing.T) {
 	}
 	if response != "pong" {
 		t.Fatalf("expected kimi response pong, got %q", response)
+	}
+}
+
+func TestHandleFetchModelsUsesStoredEndpointAPIKeyWhenMasked(t *testing.T) {
+	tests := []struct {
+		name        string
+		transformer string
+		model       string
+		modelsJSON  string
+		wantModels  []string
+	}{
+		{
+			name:        "kimi local",
+			transformer: "kimi",
+			model:       "kimi-k2.6",
+			modelsJSON:  `{"object":"list","data":[{"id":"kimi-k2.6","object":"model"},{"id":"kimi-k2.6-thinking","object":"model"}]}`,
+			wantModels:  []string{"kimi-k2.6", "kimi-k2.6-thinking"},
+		},
+		{
+			name:        "ds local",
+			transformer: "deepseek",
+			model:       "deepseek-v4-pro",
+			modelsJSON:  `{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model"},{"id":"deepseek-v4-pro","object":"model"}]}`,
+			wantModels:  []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					t.Fatalf("unexpected path: %s", r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer sk-real" {
+					http.Error(w, "bad auth", http.StatusUnauthorized)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.modelsJSON))
+			}))
+			defer upstream.Close()
+
+			store := newEndpointAPITestStorage(t)
+			defer store.Close()
+
+			if err := store.SaveEndpoint(&storage.Endpoint{
+				Name:        tt.name,
+				APIUrl:      upstream.URL + "/v1",
+				APIKey:      "sk-real",
+				AuthMode:    config.AuthModeAPIKey,
+				Enabled:     true,
+				Transformer: tt.transformer,
+				Model:       tt.model,
+			}); err != nil {
+				t.Fatalf("save endpoint: %v", err)
+			}
+
+			cfg := config.DefaultConfig()
+			cfg.BasicAuthEnabled = false
+			handler := NewHandler(cfg, nil, store)
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/endpoints/fetch-models",
+				strings.NewReader(`{"endpointName":"`+tt.name+`","apiUrl":"`+upstream.URL+`/v1","apiKey":"****","transformer":"auto"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d body=%q", rec.Code, rec.Body.String())
+			}
+			var response SuccessResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			data, ok := response.Data.(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected response data map, got %#v", response.Data)
+			}
+			rawModels, ok := data["models"].([]interface{})
+			if !ok || len(rawModels) != len(tt.wantModels) {
+				t.Fatalf("expected %d models, got %#v", len(tt.wantModels), data["models"])
+			}
+			for i, want := range tt.wantModels {
+				if rawModels[i] != want {
+					t.Fatalf("unexpected models: got %#v want %#v", rawModels, tt.wantModels)
+				}
+			}
+		})
 	}
 }

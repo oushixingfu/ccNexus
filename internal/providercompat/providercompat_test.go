@@ -60,6 +60,23 @@ func TestBuildOpenAIModelURLCandidatesVersionedBase(t *testing.T) {
 	}
 }
 
+func TestResolveLoopbackBaseURLForContainer(t *testing.T) {
+	got := resolveLoopbackBaseURLForContainer("http://127.0.0.1:6011/v1", true)
+	if got != "http://host.docker.internal:6011/v1" {
+		t.Fatalf("expected host.docker.internal rewrite, got %s", got)
+	}
+
+	got = resolveLoopbackBaseURLForContainer("http://localhost:8000/v1", true)
+	if got != "http://host.docker.internal:8000/v1" {
+		t.Fatalf("expected localhost rewrite, got %s", got)
+	}
+
+	got = resolveLoopbackBaseURLForContainer("http://127.0.0.1:6011/v1", false)
+	if got != "http://127.0.0.1:6011/v1" {
+		t.Fatalf("expected disabled rewrite to preserve URL, got %s", got)
+	}
+}
+
 func TestOpenAIChatTargetPathDeepSeekCustomGateway(t *testing.T) {
 	got := OpenAIChatTargetPath("deepseek", "https://gateway.example.com")
 	if got != "/v1/chat/completions" {

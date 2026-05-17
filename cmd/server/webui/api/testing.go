@@ -455,9 +455,10 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		APIUrl      string `json:"apiUrl"`
-		APIKey      string `json:"apiKey"`
-		Transformer string `json:"transformer"`
+		APIUrl       string `json:"apiUrl"`
+		APIKey       string `json:"apiKey"`
+		Transformer  string `json:"transformer"`
+		EndpointName string `json:"endpointName"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -465,7 +466,14 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := h.fetchModelsFromProvider(req.APIUrl, req.APIKey, req.Transformer)
+	apiURL, apiKey, transformer, err := h.resolveFetchModelsRequest(req.APIUrl, req.APIKey, req.Transformer, req.EndpointName)
+	if err != nil {
+		logger.Error("Failed to resolve fetch models request: %v", err)
+		WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	models, err := h.fetchModelsFromProvider(apiURL, apiKey, transformer)
 	if err != nil {
 		logger.Error("Failed to fetch models: %v", err)
 		WriteError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to fetch models: %v", err))
@@ -475,6 +483,57 @@ func (h *Handler) handleFetchModels(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, map[string]interface{}{
 		"models": models,
 	})
+}
+
+func (h *Handler) resolveFetchModelsRequest(apiURL, apiKey, transformer, endpointName string) (string, string, string, error) {
+	apiURL = strings.TrimSpace(apiURL)
+	apiKey = strings.TrimSpace(apiKey)
+	transformer = strings.TrimSpace(transformer)
+	endpointName = strings.TrimSpace(endpointName)
+
+	if endpointName != "" && h.storage != nil && shouldResolveFetchModelsEndpoint(apiURL, apiKey, transformer) {
+		endpoints, err := h.storage.GetEndpoints()
+		if err != nil {
+			return "", "", "", fmt.Errorf("failed to load endpoint: %w", err)
+		}
+		for _, endpoint := range endpoints {
+			if endpoint.Name != endpointName {
+				continue
+			}
+			if apiURL == "" {
+				apiURL = endpoint.APIUrl
+			}
+			if isMaskedAPIKeyValue(apiKey) {
+				apiKey = endpoint.APIKey
+			}
+			if transformer == "" {
+				transformer = endpoint.Transformer
+			}
+			break
+		}
+	}
+
+	if apiURL == "" {
+		return "", "", "", fmt.Errorf("apiUrl is required")
+	}
+	if isMaskedAPIKeyValue(apiKey) {
+		return "", "", "", fmt.Errorf("apiKey is required to fetch models")
+	}
+	if transformer == "" {
+		transformer = "auto"
+	}
+	return apiURL, apiKey, transformer, nil
+}
+
+func shouldResolveFetchModelsEndpoint(apiURL, apiKey, transformer string) bool {
+	return strings.TrimSpace(apiURL) == "" ||
+		isMaskedAPIKeyValue(apiKey) ||
+		providercompat.IsAutoTransformer(transformer)
+}
+
+func isMaskedAPIKeyValue(apiKey string) bool {
+	apiKey = strings.TrimSpace(apiKey)
+	return apiKey == "" || strings.HasPrefix(apiKey, "****")
 }
 
 // fetchModelsFromProvider fetches available models from a provider

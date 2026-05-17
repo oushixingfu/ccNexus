@@ -128,6 +128,49 @@ func TestApplyRoutingStrategyPrefersOppositeCompatibleClassBeforeOtherEndpoints(
 	}
 }
 
+func TestApplyRoutingStrategyKeepsKimiBetweenCodexAndClaude(t *testing.T) {
+	tests := []struct {
+		name       string
+		preference string
+		endpoints  []config.Endpoint
+		want       []string
+	}{
+		{
+			name:       "gpt request uses kimi before claude fallback",
+			preference: routingPreferenceCodex,
+			endpoints: []config.Endpoint{
+				routingTestEndpoint("other", "openai", "llama-3.3"),
+				routingTestEndpoint("claude", "claude", "claude-sonnet-4-5-20250929"),
+				routingTestEndpoint("kimi", "kimi", "kimi-k2.6"),
+				routingTestEndpoint("codex", "openai2", "gpt-5.5"),
+			},
+			want: []string{"codex", "kimi", "claude", "other"},
+		},
+		{
+			name:       "claude request uses kimi before codex fallback",
+			preference: routingPreferenceClaude,
+			endpoints: []config.Endpoint{
+				routingTestEndpoint("other", "openai", "llama-3.3"),
+				routingTestEndpoint("codex", "openai2", "gpt-5.5"),
+				routingTestEndpoint("kimi", "kimi", "kimi-k2.6"),
+				routingTestEndpoint("claude", "claude", "claude-sonnet-4-5-20250929"),
+			},
+			want: []string{"claude", "kimi", "codex", "other"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.UpdateEndpoints(tt.endpoints)
+			p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+			routed := p.applyRoutingStrategyToRequestPlan(tt.endpoints, tt.preference)
+			assertEndpointOrder(t, routed, tt.want)
+		})
+	}
+}
+
 func TestApplyRoutingStrategyKeepsPreferredFallbackClassWhenOnlyOppositeEndpointsExist(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -152,6 +195,45 @@ func TestApplyRoutingStrategyKeepsPreferredFallbackClassWhenOnlyOppositeEndpoint
 				routingTestEndpoint("codex-b", "openai2", "gpt-4.1"),
 			},
 			want: []string{"codex-a", "codex-b"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.UpdateEndpoints(tt.endpoints)
+			p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+			routed := p.applyRoutingStrategyToRequestPlan(tt.endpoints, tt.preference)
+			assertEndpointOrder(t, routed, tt.want)
+		})
+	}
+}
+
+func TestApplyRoutingStrategyUsesKimiBeforeOppositeClassWhenPrimaryMissing(t *testing.T) {
+	tests := []struct {
+		name       string
+		preference string
+		endpoints  []config.Endpoint
+		want       []string
+	}{
+		{
+			name:       "gpt request uses kimi before claude when no codex endpoint exists",
+			preference: routingPreferenceCodex,
+			endpoints: []config.Endpoint{
+				routingTestEndpoint("claude", "claude", "claude-sonnet-4-5-20250929"),
+				routingTestEndpoint("kimi", "kimi", "kimi-k2.6"),
+			},
+			want: []string{"kimi", "claude"},
+		},
+		{
+			name:       "claude request uses kimi before codex when no claude endpoint exists",
+			preference: routingPreferenceClaude,
+			endpoints: []config.Endpoint{
+				routingTestEndpoint("codex", "openai2", "gpt-5.5"),
+				routingTestEndpoint("kimi", "kimi", "kimi-k2.6"),
+			},
+			want: []string{"kimi", "codex"},
 		},
 	}
 

@@ -320,6 +320,102 @@ func TestHandleProxyClaudeFallsBackToCodexEndpointWhenNoClaudeEndpointAvailable(
 	}
 }
 
+func TestHandleProxyResponsesUsesKimiBeforeClaudeWhenNoCodexEndpointAvailable(t *testing.T) {
+	kimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("expected Kimi chat upstream path, got %s", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode upstream payload: %v", err)
+		}
+		if payload["model"] != "kimi-k2.6" {
+			t.Fatalf("expected endpoint model override, got %#v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-kimi","choices":[{"message":{"role":"assistant","content":"kimi middle ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer kimi.Close()
+
+	claude := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("expected Kimi endpoint to be selected before Claude, got path %s", r.URL.Path)
+	}))
+	defer claude.Close()
+
+	kimiEndpoint := failoverPolicyTestEndpoint("kimi", kimi.URL)
+	kimiEndpoint.Transformer = "kimi"
+	kimiEndpoint.Model = "kimi-k2.6"
+	kimiEndpoint.AutoSelect = true
+	kimiEndpoint.SupportsOpenAIChat = true
+	claudeEndpoint := failoverPolicyTestEndpoint("claude", claude.URL)
+	claudeEndpoint.Transformer = "claude"
+	claudeEndpoint.Model = "claude-sonnet-4-5-20250929"
+	claudeEndpoint.AutoSelect = true
+	claudeEndpoint.SupportsClaudeMessages = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{claudeEndpoint, kimiEndpoint}, kimi.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "kimi middle ok") {
+		t.Fatalf("expected responses-format body converted from Kimi, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleProxyClaudeUsesKimiBeforeCodexWhenNoClaudeEndpointAvailable(t *testing.T) {
+	kimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("expected Kimi chat upstream path, got %s", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode upstream payload: %v", err)
+		}
+		if payload["model"] != "kimi-k2.6" {
+			t.Fatalf("expected endpoint model override, got %#v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-kimi","choices":[{"message":{"role":"assistant","content":"kimi claude ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+	}))
+	defer kimi.Close()
+
+	codex := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("expected Kimi endpoint to be selected before codex, got path %s", r.URL.Path)
+	}))
+	defer codex.Close()
+
+	codexEndpoint := failoverPolicyTestEndpoint("codex", codex.URL)
+	codexEndpoint.Transformer = "openai2"
+	codexEndpoint.Model = "gpt-5.5"
+	codexEndpoint.AutoSelect = true
+	codexEndpoint.SupportsOpenAIResponses = true
+	kimiEndpoint := failoverPolicyTestEndpoint("kimi", kimi.URL)
+	kimiEndpoint.Transformer = "kimi"
+	kimiEndpoint.Model = "kimi-k2.6"
+	kimiEndpoint.AutoSelect = true
+	kimiEndpoint.SupportsOpenAIChat = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{codexEndpoint, kimiEndpoint}, kimi.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5-20250929","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "kimi claude ok") {
+		t.Fatalf("expected Claude-format body converted from Kimi, got %q", rec.Body.String())
+	}
+}
+
 func TestHandleProxyAutoSelectOneEndpointServesClaudeAndResponsesConcurrently(t *testing.T) {
 	paths := make(chan string, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

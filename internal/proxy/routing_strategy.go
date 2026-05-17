@@ -40,9 +40,11 @@ func (p *Proxy) applyRoutingStrategyToRequestPlan(endpoints []config.Endpoint, p
 	}
 
 	primary := make([]config.Endpoint, 0, len(endpoints))
+	bridge := make([]config.Endpoint, 0, len(endpoints))
 	fallback := make([]config.Endpoint, 0, len(endpoints))
 	other := make([]config.Endpoint, 0, len(endpoints))
 	deprioritizedPrimary := make([]config.Endpoint, 0)
+	deprioritizedBridge := make([]config.Endpoint, 0)
 	deprioritizedFallback := make([]config.Endpoint, 0)
 	deprioritizedOther := make([]config.Endpoint, 0)
 
@@ -54,6 +56,10 @@ func (p *Proxy) applyRoutingStrategyToRequestPlan(endpoints []config.Endpoint, p
 			deprioritizedPrimary = append(deprioritizedPrimary, endpoint)
 		case class == routingPreferencePrimary:
 			primary = append(primary, endpoint)
+		case class == routingPreferenceBridge && deprioritized:
+			deprioritizedBridge = append(deprioritizedBridge, endpoint)
+		case class == routingPreferenceBridge:
+			bridge = append(bridge, endpoint)
 		case class == routingPreferenceFallback && deprioritized:
 			deprioritizedFallback = append(deprioritizedFallback, endpoint)
 		case class == routingPreferenceFallback:
@@ -67,9 +73,11 @@ func (p *Proxy) applyRoutingStrategyToRequestPlan(endpoints []config.Endpoint, p
 
 	routed := make([]config.Endpoint, 0, len(endpoints))
 	routed = append(routed, primary...)
+	routed = append(routed, bridge...)
 	routed = append(routed, fallback...)
 	routed = append(routed, other...)
 	routed = append(routed, deprioritizedPrimary...)
+	routed = append(routed, deprioritizedBridge...)
 	routed = append(routed, deprioritizedFallback...)
 	routed = append(routed, deprioritizedOther...)
 	return routed
@@ -78,6 +86,7 @@ func (p *Proxy) applyRoutingStrategyToRequestPlan(endpoints []config.Endpoint, p
 const (
 	routingPreferenceOther = iota
 	routingPreferenceFallback
+	routingPreferenceBridge
 	routingPreferencePrimary
 )
 
@@ -87,6 +96,8 @@ func classifyEndpointForRoutingPreference(endpoint config.Endpoint, preference s
 		switch {
 		case isClaudeCapableEndpoint(endpoint):
 			return routingPreferencePrimary
+		case isKimiCapableEndpoint(endpoint):
+			return routingPreferenceBridge
 		case isCodexCapableEndpoint(endpoint):
 			return routingPreferenceFallback
 		default:
@@ -96,6 +107,8 @@ func classifyEndpointForRoutingPreference(endpoint config.Endpoint, preference s
 		switch {
 		case isCodexCapableEndpoint(endpoint):
 			return routingPreferencePrimary
+		case isKimiCapableEndpoint(endpoint):
+			return routingPreferenceBridge
 		case isClaudeCapableEndpoint(endpoint):
 			return routingPreferenceFallback
 		default:
@@ -128,6 +141,13 @@ func isCodexCapableEndpoint(endpoint config.Endpoint) bool {
 	native := providercompat.NormalizeTransformer(endpoint.Transformer)
 	return native == providercompat.TransformerOpenAI2 ||
 		endpoint.SupportsOpenAIResponses
+}
+
+func isKimiCapableEndpoint(endpoint config.Endpoint) bool {
+	native := providercompat.NormalizeTransformer(endpoint.Transformer)
+	inferred := providercompat.InferProviderTransformer(endpoint.APIUrl, endpoint.Model)
+	return native == providercompat.TransformerKimi ||
+		providercompat.NormalizeTransformer(inferred) == providercompat.TransformerKimi
 }
 
 func findEndpointByName(endpoints []config.Endpoint, name string) (config.Endpoint, bool) {

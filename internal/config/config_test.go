@@ -96,6 +96,33 @@ func TestLoadFromStorageUsesDefaultFailover(t *testing.T) {
 	}
 }
 
+func TestRoutingStrategyPersistsAndNormalizes(t *testing.T) {
+	store := newFakeConfigStorage()
+	cfg := DefaultConfig()
+	cfg.UpdateEndpoints(nil)
+	cfg.UpdateRoutingStrategy(RoutingStrategyClaude)
+
+	if err := cfg.SaveToStorage(store); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if got := store.configs["routingStrategy"]; got != RoutingStrategyClaude {
+		t.Fatalf("expected stored routing strategy %q, got %q", RoutingStrategyClaude, got)
+	}
+
+	reloaded, err := LoadFromStorage(store)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	if got := reloaded.GetRoutingStrategy(); got != RoutingStrategyClaude {
+		t.Fatalf("expected routing strategy %q, got %q", RoutingStrategyClaude, got)
+	}
+
+	cfg.UpdateRoutingStrategy("bad-strategy")
+	if got := cfg.GetRoutingStrategy(); got != RoutingStrategyAuto {
+		t.Fatalf("expected invalid strategy to normalize to %q, got %q", RoutingStrategyAuto, got)
+	}
+}
+
 func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 	store := newFakeConfigStorage()
 	cfg := DefaultConfig()

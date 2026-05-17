@@ -20,6 +20,10 @@ const (
 	RecoveredEndpointPolicyDeprioritize = "deprioritize"
 	RecoveredEndpointPolicyAutoReturn   = "auto_return"
 
+	RoutingStrategyAuto   = "auto"
+	RoutingStrategyClaude = "claude"
+	RoutingStrategyCodex  = "codex"
+
 	ThinkingOff    = "off"
 	ThinkingLow    = "low"
 	ThinkingMedium = "medium"
@@ -45,6 +49,17 @@ func NormalizeAuthMode(mode string) string {
 func IsTokenPoolAuthMode(mode string) bool {
 	normalized := NormalizeAuthMode(mode)
 	return normalized == AuthModeTokenPool || normalized == AuthModeCodexTokenPool
+}
+
+func NormalizeRoutingStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case RoutingStrategyClaude:
+		return RoutingStrategyClaude
+	case RoutingStrategyCodex:
+		return RoutingStrategyCodex
+	default:
+		return RoutingStrategyAuto
+	}
 }
 
 func NormalizeThinkingEffort(effort string) string {
@@ -326,6 +341,7 @@ type Config struct {
 	ClaudeNotificationType    string          `json:"claudeNotificationType"`              // Notification type: toast, dialog, disabled
 	ModelsCacheTTL            int             `json:"modelsCacheTTL,omitempty"`            // /v1/models cache TTL in minutes, default 30
 	ModelsCacheRefreshEnabled bool            `json:"modelsCacheRefreshEnabled,omitempty"` // Enable ?refresh=true parameter, default false
+	RoutingStrategy           string          `json:"routingStrategy,omitempty"`           // auto, claude, codex
 	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`                    // WebDAV synchronization config
 	Backup                    *BackupConfig   `json:"backup,omitempty"`                    // Backup/sync configuration
 	Update                    *UpdateConfig   `json:"update,omitempty"`                    // Update configuration
@@ -402,6 +418,7 @@ func DefaultConfig() *Config {
 		WindowHeight:              768,     // Default window height
 		ModelsCacheTTL:            30,      // Default 30 minutes
 		ModelsCacheRefreshEnabled: false,   // Default disabled
+		RoutingStrategy:           RoutingStrategyAuto,
 		Endpoints: []Endpoint{
 			{
 				Name:        "Claude Official",
@@ -484,6 +501,18 @@ func (c *Config) GetLogLevel() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.LogLevel
+}
+
+func (c *Config) GetRoutingStrategy() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return NormalizeRoutingStrategy(c.RoutingStrategy)
+}
+
+func (c *Config) UpdateRoutingStrategy(strategy string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.RoutingStrategy = NormalizeRoutingStrategy(strategy)
 }
 
 // GetBasicAuthEnabled returns whether Basic Auth is enabled (thread-safe)
@@ -868,6 +897,10 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 		}
 	}
 
+	if routingStrategy, err := storage.GetConfig("routingStrategy"); err == nil && routingStrategy != "" {
+		config.RoutingStrategy = NormalizeRoutingStrategy(routingStrategy)
+	}
+
 	if modelsCacheTTLStr, err := storage.GetConfig("modelsCacheTTL"); err == nil && modelsCacheTTLStr != "" {
 		if modelsCacheTTL, err := strconv.Atoi(modelsCacheTTLStr); err == nil {
 			config.ModelsCacheTTL = modelsCacheTTL
@@ -1191,6 +1224,9 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 	if err := storage.SetConfig("logLevel", strconv.Itoa(c.LogLevel)); err != nil {
 		return fmt.Errorf("failed to save logLevel config: %w", err)
+	}
+	if err := storage.SetConfig("routingStrategy", NormalizeRoutingStrategy(c.RoutingStrategy)); err != nil {
+		return fmt.Errorf("failed to save routingStrategy config: %w", err)
 	}
 	if err := storage.SetConfig("modelsCacheTTL", strconv.Itoa(c.ModelsCacheTTL)); err != nil {
 		return fmt.Errorf("failed to save modelsCacheTTL config: %w", err)

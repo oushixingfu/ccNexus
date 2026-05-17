@@ -546,11 +546,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	requestEndpoints := endpoints
 	currentEndpointName := p.GetCurrentEndpointName()
+	planOrderEndpoints := endpoints
 	if !useSpecificEndpoint {
 		requestEndpoints = p.getRequestPlanEndpoints(endpoints, obs)
+		routingPreference := p.routingPreferenceForRequest(clientFormat, streamReq.Model)
+		if routingPreference != routingPreferenceNone {
+			requestEndpoints = p.applyRoutingStrategyToRequestPlan(requestEndpoints, routingPreference)
+			planOrderEndpoints = requestEndpoints
+			if currentEndpoint, ok := findEndpointByName(requestEndpoints, currentEndpointName); !ok || !endpointMatchesRoutingPreference(currentEndpoint, routingPreference) {
+				currentEndpointName = ""
+			}
+		}
 	}
 	skipCurrentEndpoint := !useSpecificEndpoint && p.isEndpointDeprioritized(currentEndpointName)
-	requestPlan := newRequestEndpointPlanForCurrentWithSkip(requestEndpoints, endpoints, currentEndpointName, skipCurrentEndpoint)
+	requestPlan := newRequestEndpointPlanForCurrentWithSkip(requestEndpoints, planOrderEndpoints, currentEndpointName, skipCurrentEndpoint)
 	maxRetries := p.computeMaxRetries(requestEndpoints)
 	semanticEmptyMaxRetries := len(requestEndpoints) * semanticEmptyFailoverAttempts
 	if useSpecificEndpoint {

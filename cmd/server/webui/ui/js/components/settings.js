@@ -36,6 +36,14 @@ class Settings {
                     <div class="card-body">
                         <form id="settings-form">
                             <div class="form-group">
+                                <label class="form-label">${t('settings.routingStrategy')}</label>
+                                <select class="form-select" name="routingStrategy">
+                                    <option value="auto">${t('settings.routingStrategies.auto')}</option>
+                                    <option value="claude">${t('settings.routingStrategies.claude')}</option>
+                                    <option value="codex">${t('settings.routingStrategies.codex')}</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
                                 <label class="form-label">${t('settings.recoveredEndpointPolicy')}</label>
                                 <select class="form-select" name="recoveredEndpointPolicy">
                                     <option value="deprioritize">${t('settings.policies.deprioritize')}</option>
@@ -75,6 +83,7 @@ class Settings {
             const config = await api.getConfig();
             const failover = this.normalizeFailover(config.failover);
             const form = document.getElementById('settings-form');
+            form.elements.routingStrategy.value = this.normalizeRoutingStrategy(config.routingStrategy);
             form.elements.recoveredEndpointPolicy.value = failover.recoveredEndpointPolicy;
             Object.entries(failover.cooldowns).forEach(([key, value]) => {
                 if (form.elements[key]) {
@@ -96,6 +105,7 @@ class Settings {
 
         try {
             await api.updateConfig({
+                routingStrategy: this.normalizeRoutingStrategy(form.elements.routingStrategy.value),
                 failover: {
                     recoveredEndpointPolicy: form.elements.recoveredEndpointPolicy.value,
                     cooldowns: {
@@ -128,6 +138,13 @@ class Settings {
                 configErrorSec: Number.isFinite(Number(cooldowns.configErrorSec)) ? Number(cooldowns.configErrorSec) : defaultFailover.cooldowns.configErrorSec
             }
         };
+    }
+
+    normalizeRoutingStrategy(strategy) {
+        if (strategy === 'claude' || strategy === 'codex') {
+            return strategy;
+        }
+        return 'auto';
     }
 }
 

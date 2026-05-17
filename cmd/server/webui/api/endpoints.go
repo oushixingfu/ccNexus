@@ -8,8 +8,8 @@ import (
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/providercompat"
 	proxypkg "github.com/lich0821/ccNexus/internal/proxy"
-	"github.com/lich0821/ccNexus/internal/service"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -230,28 +230,6 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 						forceStream := ep.ForceStream
 						req.ForceStream = &forceStream
 					}
-					if req.AutoSelect == nil {
-						autoSelect := ep.AutoSelect
-						req.AutoSelect = &autoSelect
-					}
-					if req.SupportsOpenAIResponses == nil {
-						supportsOpenAIResponses := ep.SupportsOpenAIResponses
-						req.SupportsOpenAIResponses = &supportsOpenAIResponses
-					}
-					if req.SupportsOpenAIChat == nil {
-						supportsOpenAIChat := ep.SupportsOpenAIChat
-						req.SupportsOpenAIChat = &supportsOpenAIChat
-					}
-					if req.SupportsClaudeMessages == nil {
-						supportsClaudeMessages := ep.SupportsClaudeMessages
-						req.SupportsClaudeMessages = &supportsClaudeMessages
-					}
-					if req.PreferredClaudeUpstream == "" {
-						req.PreferredClaudeUpstream = ep.PreferredClaudeUpstream
-					}
-					if req.PreferredOpenAIUpstream == "" {
-						req.PreferredOpenAIUpstream = ep.PreferredOpenAIUpstream
-					}
 					break
 				}
 			}
@@ -263,43 +241,27 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	if req.ForceStream != nil {
 		forceStream = *req.ForceStream
 	}
-	autoSelect := true
-	if req.AutoSelect != nil {
-		autoSelect = *req.AutoSelect
-	}
-	supportsOpenAIResponses := boolFromPtr(req.SupportsOpenAIResponses)
-	supportsOpenAIChat := boolFromPtr(req.SupportsOpenAIChat)
-	supportsClaudeMessages := boolFromPtr(req.SupportsClaudeMessages)
 	normalizedEndpoint := config.Endpoint{
-		APIUrl:                  normalizeAPIUrl(req.APIUrl),
-		APIKey:                  req.APIKey,
-		AuthMode:                authMode,
-		Transformer:             req.Transformer,
-		Model:                   req.Model,
-		Thinking:                req.Thinking,
-		ForceStream:             forceStream,
-		AutoSelect:              autoSelect,
-		SupportsOpenAIResponses: supportsOpenAIResponses,
-		SupportsOpenAIChat:      supportsOpenAIChat,
-		SupportsClaudeMessages:  supportsClaudeMessages,
-		PreferredClaudeUpstream: req.PreferredClaudeUpstream,
-		PreferredOpenAIUpstream: req.PreferredOpenAIUpstream,
-		Remark:                  req.Remark,
+		APIUrl:      normalizeAPIUrl(req.APIUrl),
+		APIKey:      req.APIKey,
+		AuthMode:    authMode,
+		Transformer: "auto",
+		Model:       req.Model,
+		Thinking:    req.Thinking,
+		ForceStream: forceStream,
+		Remark:      req.Remark,
 	}
-	if normalizedEndpoint.Transformer == "" {
-		normalizedEndpoint.Transformer = "auto"
-	}
-	service.NewEndpointService(h.config, h.proxy, h.storage).AutoConfigureEndpoint(&normalizedEndpoint, normalizedEndpoint.AutoSelect)
+	autoConfigureEndpointForSave(&normalizedEndpoint)
 	authMode = normalizedEndpoint.AuthMode
 	req.APIUrl = normalizedEndpoint.APIUrl
 	req.APIKey = normalizedEndpoint.APIKey
 	req.Transformer = normalizedEndpoint.Transformer
 	req.Thinking = normalizedEndpoint.Thinking
 	forceStream = normalizedEndpoint.ForceStream
-	autoSelect = normalizedEndpoint.AutoSelect
-	supportsOpenAIResponses = normalizedEndpoint.SupportsOpenAIResponses
-	supportsOpenAIChat = normalizedEndpoint.SupportsOpenAIChat
-	supportsClaudeMessages = normalizedEndpoint.SupportsClaudeMessages
+	autoSelect := normalizedEndpoint.AutoSelect
+	supportsOpenAIResponses := normalizedEndpoint.SupportsOpenAIResponses
+	supportsOpenAIChat := normalizedEndpoint.SupportsOpenAIChat
+	supportsClaudeMessages := normalizedEndpoint.SupportsClaudeMessages
 	req.PreferredClaudeUpstream = normalizedEndpoint.PreferredClaudeUpstream
 	req.PreferredOpenAIUpstream = normalizedEndpoint.PreferredOpenAIUpstream
 
@@ -439,51 +401,27 @@ func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, name st
 		existing.AuthMode = config.AuthModeAPIKey
 	}
 	normalizedEndpoint := config.Endpoint{
-		Name:                    existing.Name,
-		APIUrl:                  existing.APIUrl,
-		APIKey:                  existing.APIKey,
-		AuthMode:                existing.AuthMode,
-		Enabled:                 existing.Enabled,
-		Transformer:             existing.Transformer,
-		Model:                   existing.Model,
-		Thinking:                existing.Thinking,
-		ForceStream:             existing.ForceStream,
-		AutoSelect:              existing.AutoSelect,
-		SupportsOpenAIResponses: existing.SupportsOpenAIResponses,
-		SupportsOpenAIChat:      existing.SupportsOpenAIChat,
-		SupportsClaudeMessages:  existing.SupportsClaudeMessages,
-		PreferredClaudeUpstream: existing.PreferredClaudeUpstream,
-		PreferredOpenAIUpstream: existing.PreferredOpenAIUpstream,
-		Remark:                  existing.Remark,
+		Name:        existing.Name,
+		APIUrl:      existing.APIUrl,
+		APIKey:      existing.APIKey,
+		AuthMode:    existing.AuthMode,
+		Enabled:     existing.Enabled,
+		Transformer: "auto",
+		Model:       existing.Model,
+		Thinking:    existing.Thinking,
+		ForceStream: existing.ForceStream,
+		Remark:      existing.Remark,
 	}
 	if req.ForceStream != nil {
 		normalizedEndpoint.ForceStream = *req.ForceStream
 	}
-	if req.AutoSelect != nil {
-		normalizedEndpoint.AutoSelect = *req.AutoSelect
+	if req.Model != "" {
+		normalizedEndpoint.Model = req.Model
 	}
-	if req.SupportsOpenAIResponses != nil {
-		normalizedEndpoint.SupportsOpenAIResponses = *req.SupportsOpenAIResponses
+	if req.Thinking != "" {
+		normalizedEndpoint.Thinking = req.Thinking
 	}
-	if req.SupportsOpenAIChat != nil {
-		normalizedEndpoint.SupportsOpenAIChat = *req.SupportsOpenAIChat
-	}
-	if req.SupportsClaudeMessages != nil {
-		normalizedEndpoint.SupportsClaudeMessages = *req.SupportsClaudeMessages
-	}
-	if req.PreferredClaudeUpstream != "" {
-		normalizedEndpoint.PreferredClaudeUpstream = req.PreferredClaudeUpstream
-	}
-	if req.PreferredOpenAIUpstream != "" {
-		normalizedEndpoint.PreferredOpenAIUpstream = req.PreferredOpenAIUpstream
-	}
-	if normalizedEndpoint.Transformer == "" {
-		normalizedEndpoint.Transformer = "auto"
-	}
-	if req.Transformer != "" {
-		normalizedEndpoint.Transformer = req.Transformer
-	}
-	service.NewEndpointService(h.config, h.proxy, h.storage).AutoConfigureEndpoint(&normalizedEndpoint, normalizedEndpoint.AutoSelect)
+	autoConfigureEndpointForSave(&normalizedEndpoint)
 	existing.APIUrl = normalizedEndpoint.APIUrl
 	existing.APIKey = normalizedEndpoint.APIKey
 	existing.AuthMode = normalizedEndpoint.AuthMode
@@ -746,9 +684,28 @@ func normalizeAPIUrl(apiUrl string) string {
 	return strings.TrimSuffix(apiUrl, "/")
 }
 
-func boolFromPtr(value *bool) bool {
-	if value == nil {
-		return false
+func autoConfigureEndpointForSave(endpoint *config.Endpoint) {
+	if endpoint == nil {
+		return
 	}
-	return *value
+
+	if !providercompat.IsAutoTransformer(endpoint.Transformer) {
+		endpoint.Transformer = "auto"
+	}
+	config.ApplyEndpointAuthModeRules(endpoint)
+	endpoint.AutoSelect = true
+	endpoint.SupportsOpenAIResponses = false
+	endpoint.SupportsOpenAIChat = false
+	endpoint.SupportsClaudeMessages = false
+	endpoint.PreferredClaudeUpstream = ""
+	endpoint.PreferredOpenAIUpstream = ""
+
+	switch providercompat.NormalizeTransformer(endpoint.Transformer) {
+	case providercompat.TransformerOpenAI2:
+		endpoint.SupportsOpenAIResponses = true
+	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+		endpoint.SupportsOpenAIChat = true
+	case providercompat.TransformerClaude:
+		endpoint.SupportsClaudeMessages = true
+	}
 }

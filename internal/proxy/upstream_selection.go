@@ -52,12 +52,7 @@ func selectEndpointUpstreamTransformer(clientFormat ClientFormat, endpoint confi
 		if native == providercompat.TransformerClaude && supportsUpstreamTransformer(providercompat.TransformerClaude, caps) {
 			return providercompat.TransformerClaude
 		}
-		for _, candidate := range []string{
-			openAIChatTransformerForEndpoint(endpoint),
-			providercompat.TransformerOpenAI2,
-			providercompat.TransformerClaude,
-			native,
-		} {
+		for _, candidate := range claudeClientAutoUpstreamCandidates(endpoint, native) {
 			if supportsUpstreamTransformer(candidate, caps) {
 				return candidate
 			}
@@ -91,6 +86,27 @@ func selectEndpointUpstreamTransformer(clientFormat ClientFormat, endpoint confi
 	}
 
 	return native
+}
+
+func claudeClientAutoUpstreamCandidates(endpoint config.Endpoint, native string) []string {
+	if shouldPreferResponsesForClaudeClient(endpoint, native) {
+		return []string{
+			providercompat.TransformerOpenAI2,
+			openAIChatTransformerForEndpoint(endpoint),
+			providercompat.TransformerClaude,
+			native,
+		}
+	}
+	return []string{
+		openAIChatTransformerForEndpoint(endpoint),
+		providercompat.TransformerOpenAI2,
+		providercompat.TransformerClaude,
+		native,
+	}
+}
+
+func shouldPreferResponsesForClaudeClient(endpoint config.Endpoint, native string) bool {
+	return native == providercompat.TransformerOpenAI2 || providercompat.IsOpenAIResponsesModel(endpoint.Model)
 }
 
 func selectPreferredUpstream(preference string, endpoint config.Endpoint, caps endpointUpstreamCapabilities) string {

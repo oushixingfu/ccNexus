@@ -22,7 +22,7 @@ func escapeSQLString(s string) string {
 // 是设备/平台特定的，不应在不同设备间同步。
 var safeConfigKeys = []string{
 	// 应用设置
-	"port", "logLevel", "language",
+	"port", "logLevel", "language", "routingStrategy",
 	// 主题设置
 	"theme", "themeAuto", "autoLightTheme", "autoDarkTheme",
 	// 窗口关闭行为

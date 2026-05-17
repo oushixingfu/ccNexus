@@ -97,15 +97,21 @@ func InferProviderTransformer(baseURL, model string) string {
 		return TransformerClaude
 	case strings.Contains(host, "chatgpt.com") && strings.Contains(cleanPath, "/backend-api/codex"):
 		return TransformerOpenAI2
-	case strings.Contains(host, "openai") ||
-		strings.HasPrefix(lowerModel, "gpt-") ||
-		strings.HasPrefix(lowerModel, "o1") ||
-		strings.HasPrefix(lowerModel, "o3") ||
-		strings.HasPrefix(lowerModel, "o4"):
+	case IsOpenAIResponsesModel(lowerModel):
+		return TransformerOpenAI2
+	case strings.Contains(host, "openai"):
 		return TransformerOpenAI
 	default:
 		return ""
 	}
+}
+
+func IsOpenAIResponsesModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(lower, "gpt-") ||
+		strings.HasPrefix(lower, "o1") ||
+		strings.HasPrefix(lower, "o3") ||
+		strings.HasPrefix(lower, "o4")
 }
 
 func InferEndpointTransformer(baseURL, model, transformer string) string {

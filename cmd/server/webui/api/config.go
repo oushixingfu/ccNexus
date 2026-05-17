@@ -102,18 +102,20 @@ func (h *Handler) handleResetBasicAuthPassword(w http.ResponseWriter, r *http.Re
 // getConfig returns the full configuration
 func (h *Handler) getConfig(w http.ResponseWriter, r *http.Request) {
 	WriteSuccess(w, map[string]interface{}{
-		"port":     h.config.GetPort(),
-		"logLevel": h.config.GetLogLevel(),
-		"failover": h.config.GetFailover(),
+		"port":            h.config.GetPort(),
+		"logLevel":        h.config.GetLogLevel(),
+		"failover":        h.config.GetFailover(),
+		"routingStrategy": h.config.GetRoutingStrategy(),
 	})
 }
 
 // updateConfig updates the full configuration
 func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Port     *int                   `json:"port"`
-		LogLevel *int                   `json:"logLevel"`
-		Failover *config.FailoverConfig `json:"failover"`
+		Port            *int                   `json:"port"`
+		LogLevel        *int                   `json:"logLevel"`
+		Failover        *config.FailoverConfig `json:"failover"`
+		RoutingStrategy *string                `json:"routingStrategy"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -133,6 +135,10 @@ func (h *Handler) updateConfig(w http.ResponseWriter, r *http.Request) {
 
 	if req.Failover != nil {
 		h.config.UpdateFailover(req.Failover)
+	}
+
+	if req.RoutingStrategy != nil {
+		h.config.UpdateRoutingStrategy(*req.RoutingStrategy)
 	}
 
 	// Save to storage

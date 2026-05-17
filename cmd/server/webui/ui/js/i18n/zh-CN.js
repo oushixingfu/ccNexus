@@ -217,6 +217,12 @@ export default {
 	    settings: {
 	        title: '设置',
 	        failoverTitle: '故障转移策略',
+	        routingStrategy: '全局策略',
+	        routingStrategies: {
+	            auto: '自动',
+	            claude: '用于 Claude Code',
+	            codex: '用于 Codex'
+	        },
 	        recoveredEndpointPolicy: '恢复端点策略',
 	        policies: {
 	            deprioritize: '首选降权',

@@ -217,6 +217,12 @@ export default {
 	    settings: {
 	        title: 'Settings',
 	        failoverTitle: 'Failover Policy',
+	        routingStrategy: 'Global Strategy',
+	        routingStrategies: {
+	            auto: 'Auto',
+	            claude: 'Use for Claude Code',
+	            codex: 'Use for Codex'
+	        },
 	        recoveredEndpointPolicy: 'Recovered Endpoint Policy',
 	        policies: {
 	            deprioritize: 'Deprioritize recovered endpoints',

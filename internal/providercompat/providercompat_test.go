@@ -88,6 +88,13 @@ func TestInferEndpointTransformerPreservesExplicitTransformer(t *testing.T) {
 	}
 }
 
+func TestInferEndpointTransformerFromGPTModelUsesResponses(t *testing.T) {
+	got := InferEndpointTransformer("https://gateway.example.com", "gpt-5.5", "auto")
+	if got != TransformerOpenAI2 {
+		t.Fatalf("expected gpt model to use openai2, got %s", got)
+	}
+}
+
 func TestInferEndpointTransformerDefaultsUnknownURLToOpenAI(t *testing.T) {
 	got := InferEndpointTransformer("https://gateway.example.com", "", "auto")
 	if got != TransformerOpenAI {

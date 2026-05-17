@@ -147,7 +147,7 @@ func TestEndpointForClientFormatPrefersNativeOpenAI2ForClaudeWithoutPreference(t
 	}
 }
 
-func TestEndpointForClientFormatPrefersChatForClaudeWhenAvailable(t *testing.T) {
+func TestEndpointForClientFormatPrefersResponsesForGPTClaudeClientWhenAvailable(t *testing.T) {
 	endpoint := config.Endpoint{
 		Name:                    "chat-capable-gateway",
 		Transformer:             "openai2",
@@ -158,8 +158,8 @@ func TestEndpointForClientFormatPrefersChatForClaudeWhenAvailable(t *testing.T) 
 	}
 
 	claudeUpstream := endpointForClientFormat(ClientFormatClaude, endpoint)
-	if claudeUpstream.Transformer != "openai" {
-		t.Fatalf("expected Claude client to prefer chat upstream, got %s", claudeUpstream.Transformer)
+	if claudeUpstream.Transformer != "openai2" {
+		t.Fatalf("expected Claude client with GPT endpoint model to prefer responses upstream, got %s", claudeUpstream.Transformer)
 	}
 }
 
@@ -205,10 +205,10 @@ func TestProtocolFallbackResponsesUnsupportedParameterFallsBackToChat(t *testing
 	}
 }
 
-func TestHandleProxyClaudeClientUsesChatWhenGatewaySupportsChatAndResponses(t *testing.T) {
+func TestHandleProxyClaudeClientUsesResponsesForGPTGatewayWhenAvailable(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
-			t.Fatalf("expected chat upstream path, got %s", r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("expected responses upstream path, got %s", r.URL.Path)
 		}
 		var payload map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -218,7 +218,7 @@ func TestHandleProxyClaudeClientUsesChatWhenGatewaySupportsChatAndResponses(t *t
 			t.Fatalf("expected endpoint model override, got %#v", payload["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"chat ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"responses ok"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}`))
 	}))
 	defer upstream.Close()
 
@@ -239,8 +239,84 @@ func TestHandleProxyClaudeClientUsesChatWhenGatewaySupportsChatAndResponses(t *t
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "chat ok") {
-		t.Fatalf("expected Claude-format response converted from chat, got %q", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "responses ok") {
+		t.Fatalf("expected Claude-format response converted from responses, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleProxyResponsesFallsBackToClaudeEndpointWhenNoCodexEndpointAvailable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("expected Claude upstream path, got %s", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode upstream payload: %v", err)
+		}
+		if payload["model"] != "claude-sonnet-4-5-20250929" {
+			t.Fatalf("expected endpoint model override, got %#v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"claude fallback ok"}],"usage":{"input_tokens":3,"output_tokens":2}}`))
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("claude-only", upstream.URL)
+	endpoint.Transformer = "claude"
+	endpoint.Model = "claude-sonnet-4-5-20250929"
+	endpoint.AutoSelect = true
+	endpoint.SupportsClaudeMessages = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "claude fallback ok") {
+		t.Fatalf("expected responses-format body converted from Claude, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleProxyClaudeFallsBackToCodexEndpointWhenNoClaudeEndpointAvailable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("expected responses upstream path, got %s", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("failed to decode upstream payload: %v", err)
+		}
+		if payload["model"] != "gpt-5.5" {
+			t.Fatalf("expected endpoint model override, got %#v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_test","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"codex fallback ok"}]}],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("codex-only", upstream.URL)
+	endpoint.Transformer = "openai2"
+	endpoint.Model = "gpt-5.5"
+	endpoint.AutoSelect = true
+	endpoint.SupportsOpenAIResponses = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-5-20250929","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "codex fallback ok") {
+		t.Fatalf("expected Claude-format body converted from responses, got %q", rec.Body.String())
 	}
 }
 

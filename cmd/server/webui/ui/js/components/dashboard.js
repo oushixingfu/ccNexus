@@ -1,7 +1,8 @@
 import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
-import { formatNumber, formatTokens } from '../utils/formatters.js';
+import { formatNumber, formatTokens, getTransformerLabel } from '../utils/formatters.js';
+import { endpointAvailability } from '../utils/endpointStatus.js';
 import { t } from '../utils/i18n.js';
 
 class Dashboard {
@@ -71,7 +72,10 @@ class Dashboard {
 
             // Load endpoints
             const endpointsData = await api.getEndpoints();
-            this.updateEndpoints(endpointsData.endpoints);
+            const endpoints = endpointsData.endpoints || [];
+            state.update('endpoints', endpoints);
+            state.update('tokenPools', endpointsData.tokenPools || {});
+            this.updateEndpoints(endpoints);
 
             // Load daily stats for chart
             const dailyStats = await api.getStatsDaily();
@@ -122,18 +126,15 @@ class Dashboard {
                     </thead>
                     <tbody>
                         ${enabledEndpoints.map(ep => {
-                            const available = ep.available !== false;
-                            const badgeClass = available ? 'badge-success' : 'badge-danger';
-                            const indicatorClass = available ? 'online' : 'offline';
-                            const label = available ? t('endpoints.available') : t('endpoints.unavailable');
-                            const reason = !available && ep.availabilityReason ? ` (${this.escapeHtml(ep.availabilityReason)})` : '';
+                            const status = endpointAvailability(ep);
+                            const reason = !status.available && status.reason ? ` (${this.escapeHtml(status.reason)})` : '';
                             return `
                             <tr>
                                 <td>${this.escapeHtml(ep.name)}</td>
-                                <td>${this.escapeHtml(ep.transformer)}</td>
-                                <td>
-                                    <span class="status-indicator ${indicatorClass}"></span>
-                                    <span class="badge ${badgeClass}">${label}${reason}</span>
+                                <td>${this.escapeHtml(getTransformerLabel(ep.transformer))}</td>
+                                <td title="${this.escapeHtml(status.title)}">
+                                    <span class="status-indicator ${status.indicatorClass}"></span>
+                                    <span class="badge ${status.badgeClass}">${status.label}${reason}</span>
                                 </td>
                             </tr>
                             `;
@@ -142,6 +143,16 @@ class Dashboard {
                 </table>
             </div>
         `;
+    }
+
+    applyRealtimeEvent(data) {
+        if (!data || !Array.isArray(data.endpoints)) {
+            return;
+        }
+        const container = document.getElementById('endpoints-list');
+        if (container) {
+            this.updateEndpoints(data.endpoints);
+        }
     }
 
     renderChart(dailyStats) {

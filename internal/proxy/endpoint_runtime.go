@@ -206,6 +206,16 @@ func (p *Proxy) recordEndpointSuccessEvent(endpointName string) {
 	}
 }
 
+// MarkEndpointAvailable records a successful external validation for an
+// endpoint and removes in-memory cooldown/runtime blocks.
+func (p *Proxy) MarkEndpointAvailable(endpointName string) {
+	if p == nil || strings.TrimSpace(endpointName) == "" {
+		return
+	}
+	p.clearEndpointCooldown(endpointName)
+	p.recordEndpointSuccessEvent(endpointName)
+}
+
 func (p *Proxy) emitCurrentEndpointChanged(previousName, name, reason string) {
 	if p.onCurrentEndpointChanged == nil || previousName == name {
 		return

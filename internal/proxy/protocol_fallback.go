@@ -84,6 +84,12 @@ func shouldFallbackResponsesToChat(statusCode int, lowerBody string) bool {
 		strings.Contains(lowerBody, "chat/completions")
 }
 
+// ShouldFallbackResponsesToChat reports whether an OpenAI Responses HTTP
+// failure is specific enough to retry the same endpoint through Chat Completions.
+func ShouldFallbackResponsesToChat(statusCode int, body string) bool {
+	return shouldFallbackResponsesToChat(statusCode, strings.ToLower(strings.TrimSpace(body)))
+}
+
 func shouldFallbackChatToResponses(clientFormat ClientFormat, statusCode int, lowerBody string) bool {
 	if clientFormat != ClientFormatOpenAIResponses {
 		return false

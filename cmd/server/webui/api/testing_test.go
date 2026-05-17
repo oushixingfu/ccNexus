@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/storage"
@@ -57,6 +58,315 @@ func TestSendTestRequestFallsBackFromResponsesToChat(t *testing.T) {
 	}
 	if responsesCalls != 1 || chatCalls != 1 {
 		t.Fatalf("expected one responses call and one chat call, got responses=%d chat=%d", responsesCalls, chatCalls)
+	}
+}
+
+func TestEndpointTestRecordsSuccessAndClearsStaleFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	endpointName := "manual"
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:               endpointName,
+		APIUrl:             upstream.URL,
+		APIKey:             "sk-test",
+		AuthMode:           config.AuthModeAPIKey,
+		Enabled:            true,
+		Transformer:        "openai",
+		Model:              "gpt-5.5",
+		AutoSelect:         true,
+		SupportsOpenAIChat: true,
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+
+	failureAt := time.Now().Add(-time.Minute).UTC()
+	reason := "upstream_5xx"
+	statusCode := http.StatusBadGateway
+	if _, err := store.UpsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:         &failureAt,
+		LastFailureReason:     &reason,
+		LastFailureStatusCode: &statusCode,
+	}); err != nil {
+		t.Fatalf("seed runtime failure: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	handler := NewHandler(cfg, nil, store)
+	req := httptest.NewRequest(http.MethodPost, "/api/endpoints/"+endpointName+"/test", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	var testResult map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if testResult["success"] != true {
+		t.Fatalf("expected successful test response, got %#v", testResult)
+	}
+
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	status := statuses[endpointName]
+	if status == nil || status.LastSuccessAt == nil || !status.LastSuccessAt.After(failureAt) {
+		t.Fatalf("expected later success status, got %#v", status)
+	}
+	if status.LastFailureReason != "" || status.LastFailureStatusCode != 0 {
+		t.Fatalf("expected stale failure details cleared, got reason=%q status=%d", status.LastFailureReason, status.LastFailureStatusCode)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/endpoints", nil)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list status 200, got %d body=%q", listRec.Code, listRec.Body.String())
+	}
+	var response SuccessResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	data, ok := response.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected response data map, got %#v", response.Data)
+	}
+	rawEndpoints, ok := data["endpoints"].([]interface{})
+	if !ok || len(rawEndpoints) != 1 {
+		t.Fatalf("expected one endpoint, got %#v", data["endpoints"])
+	}
+	listed, ok := rawEndpoints[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected endpoint map, got %#v", rawEndpoints[0])
+	}
+	if listed["available"] != true || listed["availability"] != "available" {
+		t.Fatalf("expected listed endpoint available, got %#v", listed)
+	}
+}
+
+func TestEndpointTestPersistsChatFallbackForResponsesOnlyGateway(t *testing.T) {
+	responsesCalls := 0
+	chatCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesCalls++
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid character 'e' looking for beginning of value","type":"bad_response_body","code":"bad_response_body"}}`))
+		case "/v1/chat/completions":
+			chatCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	endpointName := "GPT-1052"
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:                    endpointName,
+		APIUrl:                  upstream.URL,
+		APIKey:                  "sk-test",
+		AuthMode:                config.AuthModeAPIKey,
+		Enabled:                 true,
+		Transformer:             "openai2",
+		Model:                   "gpt-5.5",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	handler := NewHandler(cfg, nil, store)
+	req := httptest.NewRequest(http.MethodPost, "/api/endpoints/"+endpointName+"/test", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	var testResult map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if testResult["success"] != true {
+		t.Fatalf("expected successful fallback test response, got %#v", testResult)
+	}
+	if responsesCalls != 1 || chatCalls != 1 {
+		t.Fatalf("expected one responses and one chat call, got responses=%d chat=%d", responsesCalls, chatCalls)
+	}
+
+	endpoints, err := store.GetEndpoints()
+	if err != nil {
+		t.Fatalf("get endpoints: %v", err)
+	}
+	if len(endpoints) != 1 {
+		t.Fatalf("expected one endpoint, got %d", len(endpoints))
+	}
+	updated := endpoints[0]
+	if updated.Transformer != "openai" || !updated.SupportsOpenAIChat || updated.SupportsOpenAIResponses {
+		t.Fatalf("expected chat fallback to be persisted, got transformer=%q chat=%t responses=%t",
+			updated.Transformer,
+			updated.SupportsOpenAIChat,
+			updated.SupportsOpenAIResponses,
+		)
+	}
+	if updated.PreferredOpenAIUpstream != "openai" {
+		t.Fatalf("expected preferred OpenAI upstream openai, got %q", updated.PreferredOpenAIUpstream)
+	}
+}
+
+func TestEndpointTestDoesNotPersistChatFallbackForGenericResponsesFailure(t *testing.T) {
+	responsesCalls := 0
+	chatCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesCalls++
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporary upstream failure"}}`))
+		case "/v1/chat/completions":
+			chatCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	endpointName := "GPT-1052"
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:                    endpointName,
+		APIUrl:                  upstream.URL,
+		APIKey:                  "sk-test",
+		AuthMode:                config.AuthModeAPIKey,
+		Enabled:                 true,
+		Transformer:             "openai2",
+		Model:                   "gpt-5.5",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	handler := NewHandler(cfg, nil, store)
+	req := httptest.NewRequest(http.MethodPost, "/api/endpoints/"+endpointName+"/test", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	var testResult map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if testResult["success"] != false {
+		t.Fatalf("expected failed test response, got %#v", testResult)
+	}
+	if responsesCalls != 1 || chatCalls != 0 {
+		t.Fatalf("expected one responses call and no chat fallback, got responses=%d chat=%d", responsesCalls, chatCalls)
+	}
+
+	endpoints, err := store.GetEndpoints()
+	if err != nil {
+		t.Fatalf("get endpoints: %v", err)
+	}
+	updated := endpoints[0]
+	if updated.Transformer != "openai2" || updated.SupportsOpenAIChat || !updated.SupportsOpenAIResponses {
+		t.Fatalf("expected generic failure not to mutate protocol config, got transformer=%q chat=%t responses=%t",
+			updated.Transformer,
+			updated.SupportsOpenAIChat,
+			updated.SupportsOpenAIResponses,
+		)
+	}
+}
+
+func TestEndpointTestDoesNotFallbackWhenAutoSelectDisabled(t *testing.T) {
+	responsesCalls := 0
+	chatCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesCalls++
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid character 'e' looking for beginning of value","type":"bad_response_body","code":"bad_response_body"}}`))
+		case "/v1/chat/completions":
+			chatCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	endpointName := "manual-responses"
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:                    endpointName,
+		APIUrl:                  upstream.URL,
+		APIKey:                  "sk-test",
+		AuthMode:                config.AuthModeAPIKey,
+		Enabled:                 true,
+		Transformer:             "openai2",
+		Model:                   "gpt-5.5",
+		AutoSelect:              false,
+		SupportsOpenAIResponses: true,
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	handler := NewHandler(cfg, nil, store)
+	req := httptest.NewRequest(http.MethodPost, "/api/endpoints/"+endpointName+"/test", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	var testResult map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if testResult["success"] != false {
+		t.Fatalf("expected failed test response, got %#v", testResult)
+	}
+	if responsesCalls != 1 || chatCalls != 0 {
+		t.Fatalf("expected no fallback with auto-select disabled, got responses=%d chat=%d", responsesCalls, chatCalls)
 	}
 }
 

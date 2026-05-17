@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,7 +23,24 @@ const (
 )
 
 type endpointTestAttempt struct {
-	transformer string
+	transformer           string
+	protocolFallbackFrom  string
+	isProtocolFallbackTry bool
+}
+
+type endpointTestResult struct {
+	response         string
+	transformer      string
+	protocolFallback bool
+}
+
+type endpointTestHTTPError struct {
+	statusCode int
+	body       string
+}
+
+func (e *endpointTestHTTPError) Error() string {
+	return fmt.Sprintf("API returned status %d: %s", e.statusCode, e.body)
 }
 
 // testEndpoint tests an endpoint's connectivity
@@ -55,10 +73,11 @@ func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name stri
 
 	// Test the endpoint
 	start := time.Now()
-	response, err := h.sendTestRequest(endpoint)
+	result, err := h.sendEndpointTestRequest(endpoint)
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
+		h.recordEndpointTestFailure(endpoint.Name, err)
 		WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"success": false,
 			"latency": latency,
@@ -67,33 +86,49 @@ func (h *Handler) testEndpoint(w http.ResponseWriter, r *http.Request, name stri
 		return
 	}
 
+	h.recordEndpointTestSuccess(endpoint.Name, result.transformer, result.protocolFallback)
 	WriteJSON(w, http.StatusOK, map[string]interface{}{
 		"success":  true,
 		"latency":  latency,
-		"response": response,
+		"response": result.response,
 	})
 }
 
 // sendTestRequest sends a test request to an endpoint
 func (h *Handler) sendTestRequest(endpoint *storage.Endpoint) (string, error) {
+	result, err := h.sendEndpointTestRequest(endpoint)
+	if err != nil {
+		return "", err
+	}
+	return result.response, nil
+}
+
+func (h *Handler) sendEndpointTestRequest(endpoint *storage.Endpoint) (endpointTestResult, error) {
 	apiKey, authErr := h.resolveEndpointAPIKey(endpoint)
 	if authErr != nil {
-		return "", authErr
+		return endpointTestResult{}, authErr
 	}
 
 	attempts := buildEndpointTestAttempts(endpoint)
 	var lastErr error
 	for _, attempt := range attempts {
+		if attempt.isProtocolFallbackTry && !shouldRunEndpointTestProtocolFallback(attempt.protocolFallbackFrom, lastErr) {
+			continue
+		}
 		response, err := h.sendTestRequestWithTransformer(endpoint, apiKey, attempt.transformer)
 		if err == nil {
-			return response, nil
+			return endpointTestResult{
+				response:         response,
+				transformer:      attempt.transformer,
+				protocolFallback: attempt.isProtocolFallbackTry,
+			}, nil
 		}
 		lastErr = err
 	}
 	if lastErr != nil {
-		return "", lastErr
+		return endpointTestResult{}, lastErr
 	}
-	return "", fmt.Errorf("unsupported transformer: %s", endpoint.Transformer)
+	return endpointTestResult{}, fmt.Errorf("unsupported transformer: %s", endpoint.Transformer)
 }
 
 func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt {
@@ -114,7 +149,7 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 
 	attempts := make([]endpointTestAttempt, 0, 4)
 	seen := make(map[string]bool)
-	add := func(candidate string) {
+	addAttempt := func(candidate string, protocolFallbackFrom string) {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
 			return
@@ -124,7 +159,17 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 			return
 		}
 		seen[candidate] = true
-		attempts = append(attempts, endpointTestAttempt{transformer: candidate})
+		attempts = append(attempts, endpointTestAttempt{
+			transformer:           candidate,
+			protocolFallbackFrom:  providercompat.NormalizeTransformer(protocolFallbackFrom),
+			isProtocolFallbackTry: strings.TrimSpace(protocolFallbackFrom) != "",
+		})
+	}
+	add := func(candidate string) {
+		addAttempt(candidate, "")
+	}
+	addProtocolFallback := func(candidate string, protocolFallbackFrom string) {
+		addAttempt(candidate, protocolFallbackFrom)
 	}
 
 	switch transformer {
@@ -144,6 +189,8 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 		add(providercompat.TransformerOpenAI2)
 		if endpoint.SupportsOpenAIChat {
 			add(providerTransformer)
+		} else if endpoint.AutoSelect {
+			addProtocolFallback(providerTransformer, providercompat.TransformerOpenAI2)
 		}
 		if endpoint.SupportsClaudeMessages {
 			add(providercompat.TransformerClaude)
@@ -167,6 +214,22 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 		add(providercompat.InferEndpointTransformer(endpoint.APIUrl, endpoint.Model, endpoint.Transformer))
 	}
 	return attempts
+}
+
+func shouldRunEndpointTestProtocolFallback(fromTransformer string, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch providercompat.NormalizeTransformer(fromTransformer) {
+	case providercompat.TransformerOpenAI2:
+		var httpErr *endpointTestHTTPError
+		if !errors.As(err, &httpErr) {
+			return false
+		}
+		return proxy.ShouldFallbackResponsesToChat(httpErr.statusCode, httpErr.body)
+	default:
+		return false
+	}
 }
 
 // sendTestRequestWithTransformer sends a test request to an endpoint using one
@@ -297,7 +360,7 @@ func (h *Handler) sendTestRequestWithTransformer(endpoint *storage.Endpoint, api
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return "", &endpointTestHTTPError{statusCode: resp.StatusCode, body: string(body)}
 	}
 	if err := proxy.ValidateSemanticResponseHasOutput(body, resp.Header.Get("Content-Type")); err != nil {
 		return "", fmt.Errorf("API returned no usable output: %v", err)
@@ -357,6 +420,124 @@ func (h *Handler) sendTestRequestWithTransformer(endpoint *storage.Endpoint, api
 	}
 
 	return string(body), nil
+}
+
+func (h *Handler) recordEndpointTestSuccess(endpointName, transformer string, protocolFallback bool) {
+	if h == nil || h.storage == nil || strings.TrimSpace(endpointName) == "" {
+		return
+	}
+
+	if h.proxy != nil {
+		h.proxy.MarkEndpointAvailable(endpointName)
+	} else {
+		now := time.Now().UTC()
+		clearedFailureReason := ""
+		clearedFailureStatusCode := 0
+		if _, err := h.storage.UpsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
+			LastSuccessAt:         &now,
+			LastFailureReason:     &clearedFailureReason,
+			LastFailureStatusCode: &clearedFailureStatusCode,
+			LastAttemptAt:         &now,
+		}); err != nil {
+			logger.Warn("[%s] Failed to record endpoint test success: %v", endpointName, err)
+		}
+	}
+
+	if protocolFallback {
+		h.persistEndpointTestProtocolSuccess(endpointName, transformer)
+	}
+}
+
+func (h *Handler) recordEndpointTestFailure(endpointName string, err error) {
+	if h == nil || h.storage == nil || strings.TrimSpace(endpointName) == "" || err == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	reason := err.Error()
+	statusCode := endpointTestHTTPStatusCode(err)
+	if _, upsertErr := h.storage.UpsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:         &now,
+		LastFailureReason:     &reason,
+		LastFailureStatusCode: &statusCode,
+		LastAttemptAt:         &now,
+	}); upsertErr != nil {
+		logger.Warn("[%s] Failed to record endpoint test failure: %v", endpointName, upsertErr)
+	}
+}
+
+func endpointTestHTTPStatusCode(err error) int {
+	var httpErr *endpointTestHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.statusCode
+	}
+	return 0
+}
+
+func (h *Handler) persistEndpointTestProtocolSuccess(endpointName, transformer string) {
+	normalized := providercompat.NormalizeTransformer(transformer)
+	if h == nil || h.storage == nil || strings.TrimSpace(endpointName) == "" || normalized == "" || normalized == "auto" {
+		return
+	}
+
+	endpoints, err := h.storage.GetEndpoints()
+	if err != nil {
+		logger.Warn("[%s] Failed to load endpoints after protocol test success: %v", endpointName, err)
+		return
+	}
+	for i := range endpoints {
+		if endpoints[i].Name != endpointName {
+			continue
+		}
+		updated := endpoints[i]
+		if !applyEndpointTestProtocolSuccess(&updated, normalized) {
+			return
+		}
+		if err := h.storage.UpdateEndpoint(&updated); err != nil {
+			logger.Warn("[%s] Failed to persist protocol test success: %v", endpointName, err)
+			return
+		}
+		if h.proxy != nil {
+			if err := h.reloadConfig(); err != nil {
+				logger.Warn("[%s] Failed to reload config after protocol test success: %v", endpointName, err)
+			}
+		}
+		return
+	}
+}
+
+func applyEndpointTestProtocolSuccess(endpoint *storage.Endpoint, transformer string) bool {
+	if endpoint == nil {
+		return false
+	}
+
+	before := *endpoint
+	if !endpoint.AutoSelect {
+		return false
+	}
+	switch providercompat.NormalizeTransformer(transformer) {
+	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
+		endpoint.Transformer = providercompat.NormalizeTransformer(transformer)
+		endpoint.SupportsOpenAIChat = true
+		endpoint.SupportsOpenAIResponses = false
+		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
+	case providercompat.TransformerOpenAI2:
+		endpoint.SupportsOpenAIResponses = true
+		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2
+	case providercompat.TransformerClaude:
+		endpoint.SupportsClaudeMessages = true
+		endpoint.PreferredClaudeUpstream = providercompat.TransformerClaude
+	default:
+		return false
+	}
+
+	return endpoint.AutoSelect != before.AutoSelect ||
+		endpoint.Transformer != before.Transformer ||
+		endpoint.SupportsOpenAIChat != before.SupportsOpenAIChat ||
+		endpoint.SupportsOpenAIResponses != before.SupportsOpenAIResponses ||
+		endpoint.SupportsClaudeMessages != before.SupportsClaudeMessages ||
+		endpoint.PreferredOpenAIUpstream != before.PreferredOpenAIUpstream ||
+		endpoint.PreferredClaudeUpstream != before.PreferredClaudeUpstream
 }
 
 func isEventStreamResponse(contentType string, body []byte) bool {

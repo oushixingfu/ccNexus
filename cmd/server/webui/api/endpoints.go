@@ -78,11 +78,23 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 
 // listEndpoints returns all endpoints
 func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
-	endpoints, err := h.storage.GetEndpoints()
+	items, tokenPools, err := h.loadEndpointListPayload()
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
 		return
+	}
+
+	WriteSuccess(w, map[string]interface{}{
+		"endpoints":  items,
+		"tokenPools": tokenPools,
+	})
+}
+
+func (h *Handler) loadEndpointListPayload() ([]endpointResponse, map[string]storage.TokenPoolStats, error) {
+	endpoints, err := h.storage.GetEndpoints()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	runtimeStatuses, err := h.storage.GetEndpointRuntimeStatuses()
@@ -103,10 +115,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		tokenPools = map[string]storage.TokenPoolStats{}
 	}
 
-	WriteSuccess(w, map[string]interface{}{
-		"endpoints":  items,
-		"tokenPools": tokenPools,
-	})
+	return items, tokenPools, nil
 }
 
 // getEndpoint returns a specific endpoint

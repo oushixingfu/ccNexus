@@ -49,16 +49,10 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 			logger.Debug("[SSE] Client disconnected")
 			return
 		case <-ticker.C:
-			// Send stats update
-			stats := h.proxy.GetStats()
-
-			currentEndpoint := h.proxy.GetCurrentEndpointName()
-
-			event := map[string]interface{}{
-				"type":            "stats",
-				"timestamp":       time.Now().Unix(),
-				"stats":           stats,
-				"currentEndpoint": currentEndpoint,
+			event, err := h.buildRealtimeEventPayload(time.Now())
+			if err != nil {
+				logger.Error("[SSE] Failed to build event payload: %v", err)
+				continue
 			}
 
 			data, err := json.Marshal(event)
@@ -72,4 +66,20 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func (h *Handler) buildRealtimeEventPayload(now time.Time) (map[string]interface{}, error) {
+	items, tokenPools, err := h.loadEndpointListPayload()
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"type":            "stats",
+		"timestamp":       now.Unix(),
+		"stats":           h.proxy.GetStats(),
+		"currentEndpoint": h.proxy.GetCurrentEndpointName(),
+		"endpoints":       items,
+		"tokenPools":      tokenPools,
+	}, nil
 }

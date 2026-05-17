@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { state } from '../state.js';
 import { notifications } from '../utils/notifications.js';
 import { getTransformerLabel } from '../utils/formatters.js';
+import { endpointAvailability, endpointAvailabilityTitle } from '../utils/endpointStatus.js';
 import { t } from '../utils/i18n.js';
 
 class Endpoints {
@@ -112,9 +113,10 @@ class Endpoints {
         let testStatusIcon = '⚠️';
         let testStatusTitle = t('endpoints.notTested');
 
-        if (ep.available === false) {
+        const availability = endpointAvailability(ep);
+        if (!availability.available) {
             testStatusIcon = '❌';
-            testStatusTitle = this.getAvailabilityTitle(ep);
+            testStatusTitle = endpointAvailabilityTitle(ep);
         } else if (testStatus === true) {
             testStatusIcon = '✅';
             testStatusTitle = t('endpoints.testPassed');
@@ -144,7 +146,7 @@ class Endpoints {
                 <td>${this.renderEndpointStatus(ep)}</td>
                 <td>
                     <div class="flex gap-2">
-                        ${ep.enabled && ep.available !== false && !isCurrentEndpoint ? `
+                        ${ep.enabled && availability.available && !isCurrentEndpoint ? `
                             <button class="btn btn-sm btn-secondary switch-btn" data-name="${this.escapeHtml(ep.name)}" title="${t('endpoints.switchToEndpoint')}">
                                 ${t('common.switch')}
                             </button>
@@ -196,13 +198,12 @@ class Endpoints {
             return `<div class="status-stack">${enabledBadge}</div>`;
         }
 
-        const availability = ep.availability || (ep.available === false ? 'unavailable' : 'available');
-        if (availability === 'unavailable' || ep.available === false) {
-            const title = this.getAvailabilityTitle(ep);
+        const availability = endpointAvailability(ep);
+        if (!availability.available) {
             return `
-                <div class="status-stack" title="${this.escapeHtml(title)}">
+                <div class="status-stack" title="${this.escapeHtml(availability.title)}">
                     ${enabledBadge}
-                    <span class="badge badge-danger">${t('endpoints.unavailable')}</span>
+                    <span class="badge ${availability.badgeClass}">${availability.label}</span>
                 </div>
             `;
         }
@@ -215,36 +216,18 @@ class Endpoints {
         `;
     }
 
-    getAvailabilityTitle(ep) {
-        const reason = this.formatAvailabilityReason(ep.availabilityReason);
-        const code = ep.availabilityStatusCode ? `HTTP ${ep.availabilityStatusCode}` : '';
-        const lastFailureAt = ep.runtimeStatus?.lastFailureAt ? new Date(ep.runtimeStatus.lastFailureAt).toLocaleString() : '';
-        const parts = [reason, code, lastFailureAt].filter(Boolean);
-        return parts.length > 0 ? parts.join(' · ') : t('endpoints.unavailable');
-    }
-
-    formatAvailabilityReason(reason) {
-        const normalized = (reason || '').trim();
-        const labels = {
-            quota_exhausted: t('endpoints.reasonQuotaExhausted'),
-            rate_limited: t('endpoints.reasonRateLimited'),
-            upstream_5xx: t('endpoints.reasonUpstreamError'),
-            retryable_status: t('endpoints.reasonUpstreamError'),
-            upstream_stream_error: t('endpoints.reasonStreamError'),
-            streaming_failed: t('endpoints.reasonStreamError'),
-            aggregate_streaming_failed: t('endpoints.reasonStreamError'),
-            send_request_failed: t('endpoints.reasonNetworkError'),
-            transient_network_error: t('endpoints.reasonNetworkError'),
-            transport_protocol_error: t('endpoints.reasonNetworkError'),
-            endpoint_auth_failed: t('endpoints.reasonAuthFailed'),
-            credential_select_failed: t('endpoints.reasonTokenUnavailable'),
-            no_usable_token: t('endpoints.reasonTokenUnavailable'),
-            credential_refresh_failed: t('endpoints.reasonTokenUnavailable'),
-            empty_api_key: t('endpoints.reasonConfigError'),
-            prepare_transformer_failed: t('endpoints.reasonConfigError'),
-            build_request_failed: t('endpoints.reasonConfigError')
-        };
-        return labels[normalized] || normalized || t('endpoints.unavailable');
+    applyRealtimeEvent(data) {
+        if (!data || !Array.isArray(data.endpoints)) {
+            return;
+        }
+        this.endpoints = data.endpoints;
+        this.tokenPools = data.tokenPools || this.tokenPools || {};
+        if (typeof data.currentEndpoint === 'string') {
+            this.currentEndpoint = data.currentEndpoint;
+        }
+        if (document.getElementById('endpoints-table')) {
+            this.renderTable();
+        }
     }
 
     renderTokenPoolSummary(pool) {

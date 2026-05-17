@@ -26,6 +26,51 @@ func (noopStatsStorage) GetPeriodStatsAggregated(startDate, endDate string) (map
 	return map[string]interface{}{}, nil
 }
 
+func TestRealtimeEventPayloadIncludesEndpointAvailability(t *testing.T) {
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:        "Primary",
+		APIUrl:      "https://api.example.com",
+		APIKey:      "sk-test",
+		AuthMode:    config.AuthModeAPIKey,
+		Enabled:     true,
+		Transformer: "openai",
+		Model:       "gpt-5.5",
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+	failureAt := time.Now().UTC()
+	failureReason := "quota_exhausted"
+	failureStatus := http.StatusTooManyRequests
+	if _, err := store.UpsertEndpointRuntimeStatus("Primary", storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:         &failureAt,
+		LastFailureReason:     &failureReason,
+		LastFailureStatusCode: &failureStatus,
+	}); err != nil {
+		t.Fatalf("seed runtime status: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	p := proxypkg.New(cfg, noopStatsStorage{}, store, "test-device")
+	handler := NewHandler(cfg, p, store)
+
+	payload, err := handler.buildRealtimeEventPayload(time.Unix(123, 0))
+	if err != nil {
+		t.Fatalf("build realtime event payload: %v", err)
+	}
+	endpoints, ok := payload["endpoints"].([]endpointResponse)
+	if !ok || len(endpoints) != 1 {
+		t.Fatalf("expected one endpoint response in realtime payload, got %#v", payload["endpoints"])
+	}
+	endpoint := endpoints[0]
+	if endpoint.Available || endpoint.Availability != "unavailable" || endpoint.AvailabilityReason != failureReason || endpoint.AvailabilityStatusCode != failureStatus {
+		t.Fatalf("expected realtime payload to match endpoint availability, got %#v", endpoint)
+	}
+}
+
 func TestDeriveEndpointAvailabilityUsesRuntimeFailure(t *testing.T) {
 	failureAt := time.Now().UTC()
 	status := &storage.EndpointRuntimeStatus{

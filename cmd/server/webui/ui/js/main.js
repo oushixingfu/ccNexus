@@ -83,10 +83,16 @@ function initRealtime() {
             if (data.type === 'stats') {
                 state.update('stats', data.stats);
                 state.update('currentEndpoint', data.currentEndpoint);
+                if (Array.isArray(data.endpoints)) {
+                    state.update('endpoints', data.endpoints);
+                    state.update('tokenPools', data.tokenPools || {});
+                }
 
-                // Update dashboard if it's the current view
-                if (state.get('currentView') === 'dashboard') {
-                    // Dashboard will handle its own updates via state subscription
+                const currentView = state.get('currentView');
+                if (currentView === 'dashboard') {
+                    dashboard.applyRealtimeEvent(data);
+                } else if (currentView === 'endpoints') {
+                    endpoints.applyRealtimeEvent(data);
                 }
             }
         } catch (error) {

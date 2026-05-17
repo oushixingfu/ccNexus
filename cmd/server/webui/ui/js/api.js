@@ -72,6 +72,30 @@ class APIClient {
         return this.request('POST', '/endpoints/fetch-models', { apiUrl, apiKey, transformer });
     }
 
+    async getEndpointModels(name) {
+        return this.request('GET', `/endpoints/${encodeURIComponent(name)}/models`);
+    }
+
+    async addEndpointModel(name, data) {
+        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/models`, data);
+    }
+
+    async updateEndpointModel(name, modelId, data) {
+        return this.request('PUT', `/endpoints/${encodeURIComponent(name)}/models/${encodeURIComponent(modelId)}`, data);
+    }
+
+    async deleteEndpointModel(name, modelId) {
+        return this.request('DELETE', `/endpoints/${encodeURIComponent(name)}/models/${encodeURIComponent(modelId)}`);
+    }
+
+    async verifyEndpointModel(name, modelId) {
+        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/models/${encodeURIComponent(modelId)}/verify`);
+    }
+
+    async discoverEndpointModels(name) {
+        return this.request('POST', `/endpoints/${encodeURIComponent(name)}/models/discover`);
+    }
+
     async getEndpointCredentials(name) {
         return this.request('GET', `/endpoints/${encodeURIComponent(name)}/credentials`);
     }

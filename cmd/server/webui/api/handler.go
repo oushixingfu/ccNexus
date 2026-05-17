@@ -76,6 +76,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/events":
 		authMiddleware(http.HandlerFunc(h.handleEvents)).ServeHTTP(w, r)
 	default:
+		if strings.HasPrefix(path, "/api/endpoints/") && strings.Contains(path, "/models") {
+			authMiddleware(http.HandlerFunc(h.handleEndpointModels)).ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(path, "/api/endpoints/") {
 			authMiddleware(http.HandlerFunc(h.handleEndpointByName)).ServeHTTP(w, r)
 			return

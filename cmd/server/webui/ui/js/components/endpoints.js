@@ -155,6 +155,9 @@ class Endpoints {
                         <button class="btn btn-sm btn-secondary token-pool-btn" data-name="${this.escapeHtml(ep.name)}">
                             ${t('endpoints.tokenPoolManagement')}
                         </button>
+                        <button class="btn btn-sm btn-secondary endpoint-models-btn" data-name="${this.escapeHtml(ep.name)}">
+                            ${t('endpoints.models')}
+                        </button>
                         <label class="toggle-switch">
                             <input type="checkbox" class="toggle-endpoint" data-name="${this.escapeHtml(ep.name)}" ${ep.enabled ? 'checked' : ''}>
                             <span class="toggle-slider"></span>
@@ -292,6 +295,11 @@ class Endpoints {
         // Token pool buttons
         document.querySelectorAll('.token-pool-btn').forEach(btn => {
             btn.addEventListener('click', () => this.showTokenPoolModal(btn.dataset.name));
+        });
+
+        // Endpoint model buttons
+        document.querySelectorAll('.endpoint-models-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.showEndpointModelsModal(btn.dataset.name));
         });
 
         // Copy buttons
@@ -718,6 +726,184 @@ class Endpoints {
             notifications.success(t('notifications.endpointCloned'));
         } catch (error) {
             notifications.error(`${t('endpoints.failedToClone')}: ${error.message}`);
+        }
+    }
+
+    async showEndpointModelsModal(endpointName) {
+        try {
+            const result = await api.getEndpointModels(endpointName);
+            const models = result.models || [];
+            const modalContainer = document.getElementById('modal-container');
+
+            modalContainer.innerHTML = `
+                <div class="modal-overlay">
+                    <div class="modal" style="max-width: 920px; width: 95vw;">
+                        <div class="modal-header">
+                            <h3 class="modal-title">${this.escapeHtml(endpointName)} ${t('endpoints.models')}</h3>
+                            <button class="modal-close" id="close-modal">×</button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="form-group">
+                                <label class="form-label">${t('endpoints.addModel')}</label>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <input type="text" class="form-input" id="endpoint-model-id" placeholder="${t('endpoints.modelPlaceholder')}" style="flex: 1;">
+                                    <label style="display: inline-flex; gap: 6px; align-items: center; white-space: nowrap;">
+                                        <input type="checkbox" id="endpoint-model-enabled" checked>
+                                        ${t('common.enabled')}
+                                    </label>
+                                    <button class="btn btn-primary" id="add-endpoint-model-btn">${t('common.add')}</button>
+                                </div>
+                            </div>
+
+                            <div class="flex gap-2 mb-2">
+                                <button class="btn btn-secondary" id="discover-endpoint-models-btn">${t('endpoints.discoverModels')}</button>
+                                <button class="btn btn-secondary" id="refresh-endpoint-models-btn">${t('common.refresh')}</button>
+                            </div>
+
+                            <div class="table-container" style="max-height: 460px; overflow-y: auto;">
+                                <table class="table">
+                                    <thead>
+                                        <tr>
+                                            <th>${t('endpoints.model')}</th>
+                                            <th>${t('common.status')}</th>
+                                            <th>${t('common.enabled')}</th>
+                                            <th>${t('endpoints.source')}</th>
+                                            <th>${t('endpoints.lastVerified')}</th>
+                                            <th>${t('common.actions')}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${this.renderEndpointModelRows(models)}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-secondary" id="close-endpoint-models-btn">${t('common.close')}</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('close-modal').addEventListener('click', () => this.closeModal());
+            document.getElementById('close-endpoint-models-btn').addEventListener('click', () => this.closeModal());
+            document.getElementById('refresh-endpoint-models-btn').addEventListener('click', () => this.showEndpointModelsModal(endpointName));
+            document.getElementById('add-endpoint-model-btn').addEventListener('click', () => this.addEndpointModel(endpointName));
+            document.getElementById('discover-endpoint-models-btn').addEventListener('click', () => this.discoverEndpointModels(endpointName));
+
+            document.querySelectorAll('.endpoint-model-enable-toggle').forEach(toggle => {
+                toggle.addEventListener('change', () => this.updateEndpointModelEnabled(endpointName, toggle.dataset.model, toggle.checked));
+            });
+            document.querySelectorAll('.endpoint-model-verify-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.verifyEndpointModel(endpointName, btn.dataset.model));
+            });
+            document.querySelectorAll('.endpoint-model-delete-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.deleteEndpointModel(endpointName, btn.dataset.model));
+            });
+        } catch (error) {
+            notifications.error(`${t('endpoints.failedToLoadModels')}: ${error.message}`);
+        }
+    }
+
+    renderEndpointModelRows(models) {
+        if (!models || models.length === 0) {
+            return `<tr><td colspan="6" class="text-center text-muted">${t('endpoints.noEndpointModels')}</td></tr>`;
+        }
+
+        return models.map(model => `
+            <tr>
+                <td><code>${this.escapeHtml(model.modelId || '-')}</code></td>
+                <td>${this.renderEndpointModelStatus(model)}</td>
+                <td>
+                    <label class="toggle-switch">
+                        <input type="checkbox" class="endpoint-model-enable-toggle" data-model="${this.escapeHtml(model.modelId)}" ${model.enabled ? 'checked' : ''}>
+                        <span class="toggle-slider"></span>
+                    </label>
+                </td>
+                <td>${this.escapeHtml(model.source || '-')}</td>
+                <td>${this.escapeHtml(this.formatDateTime(model.lastVerifiedAt))}</td>
+                <td>
+                    <div class="flex gap-2">
+                        <button class="btn btn-sm btn-secondary endpoint-model-verify-btn" data-model="${this.escapeHtml(model.modelId)}">${t('endpoints.verifyNow')}</button>
+                        <button class="btn btn-sm btn-danger endpoint-model-delete-btn" data-model="${this.escapeHtml(model.modelId)}">${t('common.delete')}</button>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    renderEndpointModelStatus(model) {
+        const status = model.verificationStatus || 'unknown';
+        const classMap = {
+            verified: 'badge-success',
+            failed: 'badge-danger',
+            verifying: 'badge-info',
+            discovered: 'badge-info',
+            unknown: 'badge-info'
+        };
+        const title = [model.failureKind, model.failureMessage].filter(Boolean).join(': ');
+        return `<span class="badge ${classMap[status] || 'badge-info'}" title="${this.escapeHtml(title)}">${this.escapeHtml(status)}</span>`;
+    }
+
+    async addEndpointModel(endpointName) {
+        const input = document.getElementById('endpoint-model-id');
+        const enabledInput = document.getElementById('endpoint-model-enabled');
+        const modelId = (input?.value || '').trim();
+        if (!modelId) {
+            notifications.warning(t('endpoints.enterModelId'));
+            return;
+        }
+        try {
+            await api.addEndpointModel(endpointName, { modelId, enabled: enabledInput?.checked !== false });
+            notifications.success(t('notifications.endpointModelAdded'));
+            await this.showEndpointModelsModal(endpointName);
+        } catch (error) {
+            notifications.error(`${t('endpoints.failedToSaveModel')}: ${error.message}`);
+        }
+    }
+
+    async updateEndpointModelEnabled(endpointName, modelId, enabled) {
+        try {
+            await api.updateEndpointModel(endpointName, modelId, { enabled });
+            notifications.success(enabled ? t('notifications.endpointModelEnabled') : t('notifications.endpointModelDisabled'));
+            await this.showEndpointModelsModal(endpointName);
+        } catch (error) {
+            notifications.error(`${t('endpoints.failedToSaveModel')}: ${error.message}`);
+            await this.showEndpointModelsModal(endpointName);
+        }
+    }
+
+    async verifyEndpointModel(endpointName, modelId) {
+        try {
+            await api.verifyEndpointModel(endpointName, modelId);
+            notifications.success(t('notifications.endpointModelVerifyQueued'));
+            await this.showEndpointModelsModal(endpointName);
+        } catch (error) {
+            notifications.error(`${t('endpoints.failedToVerifyModel')}: ${error.message}`);
+        }
+    }
+
+    async discoverEndpointModels(endpointName) {
+        try {
+            const result = await api.discoverEndpointModels(endpointName);
+            const count = (result.models || []).length;
+            notifications.success(t('notifications.endpointModelsDiscovered').replace('{count}', count));
+            await this.showEndpointModelsModal(endpointName);
+        } catch (error) {
+            notifications.error(`${t('endpoints.failedToDiscoverModels')}: ${error.message}`);
+        }
+    }
+
+    async deleteEndpointModel(endpointName, modelId) {
+        if (!confirm(t('endpoints.confirmDeleteModel').replace('{model}', modelId))) {
+            return;
+        }
+        try {
+            await api.deleteEndpointModel(endpointName, modelId);
+            notifications.success(t('notifications.endpointModelDeleted'));
+            await this.showEndpointModelsModal(endpointName);
+        } catch (error) {
+            notifications.error(`${t('endpoints.failedToDeleteModel')}: ${error.message}`);
         }
     }
 

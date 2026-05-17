@@ -143,6 +143,56 @@ func TestHandleProxyNormalizesToolRoleInResponsesInputForOpenAI2Upstream(t *test
 	}
 }
 
+func TestHandleProxyNormalizesStringResponsesInputForOpenAI2Upstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode upstream request: %v", err)
+		}
+
+		input, ok := body["input"].([]interface{})
+		if !ok || len(input) != 1 {
+			t.Fatalf("expected single input array item, got %#v", body["input"])
+		}
+		message, ok := input[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected input message object, got %#v", input[0])
+		}
+		if message["role"] != "user" {
+			t.Fatalf("expected user role, got %#v", message["role"])
+		}
+		content, ok := message["content"].([]interface{})
+		if !ok || len(content) != 1 {
+			t.Fatalf("expected single content part, got %#v", message["content"])
+		}
+		part, ok := content[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected content part object, got %#v", content[0])
+		}
+		if part["type"] != "input_text" || part["text"] != "hi" {
+			t.Fatalf("expected input_text hi, got %#v", part)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-upstream","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
+	}))
+	defer upstream.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("Primary", upstream.URL),
+	}, upstream.Client())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi","max_output_tokens":8}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected upstream success, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleProxyAutoForceStreamsOpenAI2WhenUpstreamRequiresStream(t *testing.T) {
 	var upstreamHits int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

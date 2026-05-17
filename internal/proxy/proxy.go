@@ -57,6 +57,8 @@ type Proxy struct {
 	cooldownMu               sync.RWMutex                // protects endpointCooldowns
 	runtimeBlockedEndpoints  map[string]string           // hard request-plan skips for failures that lightweight probes cannot clear
 	runtimeBlockedMu         sync.RWMutex                // protects runtimeBlockedEndpoints
+	modelRegistry            *modelRegistry              // verified endpoint-model index for request routing
+	modelVerifier            *modelVerifier              // background verifier for endpoint model support
 	streamHeaderTimeout      time.Duration               // injectable response-header timeout for upstream streaming requests
 	streamHeartbeatInterval  time.Duration               // injectable downstream SSE heartbeat interval
 	healthCheckCtx           context.Context             // cancelable context for health check goroutine
@@ -88,7 +90,7 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 		},
 	}
 
-	return &Proxy{
+	p := &Proxy{
 		config:                  cfg,
 		configEndpointsSnapshot: cloneEndpoints(cfg.GetEndpoints()),
 		storage:                 sqliteStorage,
@@ -106,6 +108,11 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 		healthCheckWatched:      make(map[string]struct{}),
 		healthCheckWake:         make(chan struct{}, 1),
 	}
+	if sqliteStorage != nil {
+		p.modelRegistry = newModelRegistry(sqliteStorage)
+		p.modelVerifier = newModelVerifier(httpClient)
+	}
+	return p
 }
 
 // SetOnEndpointSuccess sets the callback for successful endpoint requests
@@ -538,6 +545,55 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		logger.Debug("[Resolver] 使用指定端点: %s", specifiedEndpoint.Name)
 	}
 
+	clientModelForRouting := strings.TrimSpace(streamReq.Model)
+	if requestedModelSuffix != "" {
+		clientModelForRouting = strings.TrimSpace(requestedModelSuffix)
+	}
+	if strings.HasPrefix(clientModelForRouting, "@") {
+		clientModelForRouting = ""
+	}
+	modelCandidatesByEndpoint := map[string]storage.EndpointModel{}
+	modelRoutingActive := false
+	if clientModelForRouting != "" && p.modelRegistry != nil {
+		candidates, err := p.modelRegistry.verifiedCandidates(clientModelForRouting)
+		if err != nil {
+			logger.Warn("Failed to load model routing candidates for %s: %v", clientModelForRouting, err)
+			writeJSONProxyFailure(w, http.StatusInternalServerError, "model_registry_error", "failed to load model routing candidates")
+			return
+		}
+		filtered, candidateMap := filterEndpointsByVerifiedModel(endpoints, candidates)
+		endpointsToInspect := endpoints
+		if useSpecificEndpoint {
+			endpointsToInspect = []config.Endpoint{*specifiedEndpoint}
+		}
+		enforceModelRouting := p.modelRegistry.hasEndpointModelRows(endpointsToInspect)
+		if useSpecificEndpoint {
+			candidate, ok := candidateMap[specifiedEndpoint.Name]
+			if !ok {
+				if enforceModelRouting {
+					p.enqueueModelVerification(clientModelForRouting, []config.Endpoint{*specifiedEndpoint})
+					writeModelNotVerifiedError(w, clientModelForRouting)
+					return
+				}
+			} else {
+				modelCandidatesByEndpoint[specifiedEndpoint.Name] = candidate
+				modelRoutingActive = true
+			}
+		} else {
+			if len(filtered) == 0 {
+				if enforceModelRouting {
+					p.enqueueModelVerification(clientModelForRouting, endpoints)
+					writeModelNotVerifiedError(w, clientModelForRouting)
+					return
+				}
+			} else {
+				endpoints = filtered
+				modelCandidatesByEndpoint = candidateMap
+				modelRoutingActive = true
+			}
+		}
+	}
+
 	var streamSession *downstreamStreamSession
 	if streamReq.Stream {
 		streamSession = newDownstreamStreamSession(w, p.streamHeartbeatIntervalOrDefault())
@@ -549,7 +605,10 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	planOrderEndpoints := endpoints
 	if !useSpecificEndpoint {
 		requestEndpoints = p.getRequestPlanEndpoints(endpoints, obs)
-		routingPreference := p.routingPreferenceForRequest(clientFormat, streamReq.Model)
+		routingPreference := routingPreferenceNone
+		if !modelRoutingActive {
+			routingPreference = p.routingPreferenceForRequest(clientFormat, streamReq.Model)
+		}
 		if routingPreference != routingPreferenceNone {
 			requestEndpoints = p.applyRoutingStrategyToRequestPlan(requestEndpoints, routingPreference)
 			planOrderEndpoints = requestEndpoints
@@ -616,6 +675,17 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "No enabled endpoints available", http.StatusServiceUnavailable)
 			return
 		}
+		if modelRoutingActive {
+			if _, ok := modelCandidatesByEndpoint[endpoint.Name]; !ok {
+				if !useSpecificEndpoint && len(modelCandidatesByEndpoint) > 0 {
+					p.advanceRequestEndpoint(requestPlan, endpoint, obs, retry+1, "unsupported_model")
+					endpointAttempts = 0
+					continue
+				}
+				writeModelNotVerifiedError(w, clientModelForRouting)
+				return
+			}
+		}
 		lastAttemptEndpointName = endpoint.Name
 
 		endpointAttempts++
@@ -674,9 +744,18 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		fallbackKey := protocolFallbackKey(endpoint.Name, clientFormat)
 		upstreamEndpoint := endpointForClientFormat(clientFormat, endpoint)
+		if modelCandidate, ok := modelCandidatesByEndpoint[endpoint.Name]; ok {
+			upstreamEndpoint.Model = modelCandidate.ModelID
+			if strings.TrimSpace(modelCandidate.UpstreamTransformer) != "" {
+				upstreamEndpoint.Transformer = modelCandidate.UpstreamTransformer
+			}
+		}
 		protocolFallbackApplied := false
 		if fallbackTransformer := protocolFallbackOverrides[fallbackKey]; fallbackTransformer != "" {
 			upstreamEndpoint = endpoint
+			if modelCandidate, ok := modelCandidatesByEndpoint[endpoint.Name]; ok {
+				upstreamEndpoint.Model = modelCandidate.ModelID
+			}
 			upstreamEndpoint.Transformer = fallbackTransformer
 			protocolFallbackApplied = true
 			logger.Debug("[%s] Using protocol fallback upstream transformer: client_format=%s upstream_transformer=%s", endpoint.Name, clientFormat, fallbackTransformer)
@@ -742,7 +821,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			modelName = upstreamEndpoint.Model
 		}
 		if requestedModelSuffix != "" {
-			logger.Debug("[%s] Ignoring model suffix from endpoint selector due endpoint model priority: %s", endpoint.Name, requestedModelSuffix)
+			logger.Debug("[%s] Using endpoint selector model suffix: %s", endpoint.Name, requestedModelSuffix)
 		}
 		if clientModelName != "" && upstreamModelName != "" && clientModelName != upstreamModelName {
 			logger.Debug("[%s] Model mapping: client_model=%s upstream_model=%s", endpoint.Name, clientModelName, upstreamModelName)
@@ -1058,6 +1137,43 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		writeRawUpstreamFailure := func(statusCode int, headers http.Header, body []byte) {
+			for key, values := range headers {
+				if key == "Content-Encoding" || key == "Content-Length" {
+					continue
+				}
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
+			}
+			w.WriteHeader(statusCode)
+			w.Write(body)
+		}
+		handleUnsupportedModelFailure := func(statusCode int, headers http.Header, body []byte, logMsg string) (bool, bool) {
+			modelCandidate, ok := modelCandidatesByEndpoint[endpoint.Name]
+			if !ok || !isUnsupportedModelHTTPFailure(statusCode, string(body)) {
+				return false, false
+			}
+			p.markEndpointModelUnsupported(modelCandidate, string(body))
+			logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, statusCode, "unsupported_model", "Upstream reported model unsupported, skipping endpoint for this model: %s", logMsg)
+			p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+			p.recordEndpointError(endpoint.Name, "unsupported_model", statusCode)
+			p.markRequestInactive(endpoint.Name)
+			if !useSpecificEndpoint && requestPlan.Len() > 1 {
+				delete(modelCandidatesByEndpoint, endpoint.Name)
+				p.advanceRequestEndpoint(requestPlan, endpoint, obs, attemptNumber, "unsupported_model")
+				endpointAttempts = 0
+				return true, true
+			}
+			recordClientError(endpoint.Name)
+			if streamSession != nil && streamSession.Started() {
+				_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, "unsupported_model", fmt.Sprintf("Upstream reported model unsupported: %s", logMsg))
+				return true, false
+			}
+			writeRawUpstreamFailure(statusCode, headers, body)
+			return true, false
+		}
+
 		if shouldRetry(resp.StatusCode) {
 			var errBody []byte
 			if resp.Header.Get("Content-Encoding") == "gzip" {
@@ -1070,6 +1186,12 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			logMsg := errMsg
 			if len(logMsg) > 200 {
 				logMsg = logMsg[:200] + "..."
+			}
+			if handled, retryNext := handleUnsupportedModelFailure(resp.StatusCode, resp.Header, errBody, logMsg); handled {
+				if retryNext {
+					continue
+				}
+				return
 			}
 			if fallbackTransformer := protocolFallbackTransformerForHTTPFailure(clientFormat, endpoint, upstreamEndpoint, transformerName, resp.StatusCode, errMsg); fallbackTransformer != "" {
 				fallbackAttemptKey := fallbackKey + "|" + fallbackTransformer
@@ -1187,6 +1309,13 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				endpointAttempts = 0
 				continue
 			}
+		}
+
+		if handled, retryNext := handleUnsupportedModelFailure(resp.StatusCode, resp.Header, respBody, respLogMsg); handled {
+			if retryNext {
+				continue
+			}
+			return
 		}
 
 		if shouldRetryWithForcedStream(resp.StatusCode, respMsg, streamReq.Stream, transformerName) &&

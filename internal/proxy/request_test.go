@@ -8,9 +8,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
 	"github.com/lich0821/ccNexus/internal/logger"
+	"github.com/lich0821/ccNexus/internal/storage"
 )
 
 func TestEnsureCodexResponsesPayload(t *testing.T) {
@@ -608,7 +610,57 @@ func TestHandleProxyChatToCustomDeepSeekUsesEndpointModel(t *testing.T) {
 	}
 }
 
-func TestHandleProxyEndpointSelectorModelSuffixDoesNotOverrideEndpointModel(t *testing.T) {
+func TestHandleProxyFiltersByVerifiedModelThenPreservesEndpointPriority(t *testing.T) {
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("expected Kimi chat upstream path, got %s", r.URL.Path)
+		}
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode primary payload: %v", err)
+		}
+		if payload["model"] != "gpt-5.5" {
+			t.Fatalf("expected requested model to be preserved, got %#v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-primary","choices":[{"message":{"role":"assistant","content":"primary ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer primary.Close()
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("fallback should not be used while primary supports requested model")
+	}))
+	defer fallback.Close()
+
+	primaryEndpoint := failoverPolicyTestEndpoint("Primary", primary.URL)
+	primaryEndpoint.Transformer = "kimi"
+	primaryEndpoint.Model = "legacy-kimi"
+	fallbackEndpoint := failoverPolicyTestEndpoint("Fallback", fallback.URL)
+	fallbackEndpoint.Transformer = "openai2"
+	fallbackEndpoint.Model = "legacy-codex"
+	p := newFailoverPolicyTestProxy([]config.Endpoint{primaryEndpoint, fallbackEndpoint}, primary.Client())
+	p.modelRegistry = newModelRegistry(&fakeEndpointModelStore{models: []storage.EndpointModel{
+		{EndpointName: "Primary", ModelID: "gpt-5.5", Enabled: true, VerificationStatus: storage.EndpointModelStatusVerified, UpstreamTransformer: "kimi"},
+		{EndpointName: "Fallback", ModelID: "gpt-5.5", Enabled: true, VerificationStatus: storage.EndpointModelStatusVerified, UpstreamTransformer: "openai2"},
+	}})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-5.5","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if primaryHits != 1 {
+		t.Fatalf("expected primary hit once, got %d", primaryHits)
+	}
+}
+
+func TestHandleProxyEndpointSelectorModelSuffixUsesVerifiedModel(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("unexpected upstream path: %s", r.URL.Path)
@@ -618,47 +670,25 @@ func TestHandleProxyEndpointSelectorModelSuffixDoesNotOverrideEndpointModel(t *t
 			t.Fatalf("failed to decode upstream payload: %v", err)
 		}
 		if payload["model"] != "deepseek-v4-pro" {
-			t.Fatalf("expected endpoint model to win over selector suffix, got %#v", payload["model"])
+			t.Fatalf("expected selector suffix model, got %#v", payload["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`))
 	}))
 	defer upstream.Close()
 
-	cfg := config.DefaultConfig()
-	cfg.UpdateEndpoints([]config.Endpoint{
-		{
-			Name:        "other",
-			APIUrl:      "https://unused.example.com",
-			APIKey:      "unused",
-			AuthMode:    config.AuthModeAPIKey,
-			Enabled:     true,
-			Transformer: "openai",
-			Model:       "gpt-4.1",
-		},
-		{
-			Name:        "1052-2nd",
-			APIUrl:      upstream.URL,
-			APIKey:      "test-key",
-			AuthMode:    config.AuthModeAPIKey,
-			Enabled:     true,
-			Transformer: "deepseek",
-			Model:       "deepseek-v4-pro",
-		},
-	})
+	other := failoverPolicyTestEndpoint("other", "https://unused.example.com")
+	other.Transformer = "openai"
+	other.Model = "gpt-4.1"
+	selected := failoverPolicyTestEndpoint("1052-2nd", upstream.URL)
+	selected.Transformer = "deepseek"
+	selected.Model = "fallback-model"
+	p := newFailoverPolicyTestProxy([]config.Endpoint{other, selected}, upstream.Client())
+	p.modelRegistry = newModelRegistry(&fakeEndpointModelStore{models: []storage.EndpointModel{
+		{EndpointName: "1052-2nd", ModelID: "deepseek-v4-pro", Enabled: true, VerificationStatus: storage.EndpointModelStatusVerified, UpstreamTransformer: "deepseek"},
+	}})
 
-	p := &Proxy{
-		config:         cfg,
-		stats:          NewStats(&noopStatsStorage{}, "test-device"),
-		httpClient:     upstream.Client(),
-		activeRequests: make(map[string]int),
-		endpointCtx:    make(map[string]context.Context),
-		endpointCancel: make(map[string]context.CancelFunc),
-		currentIndex:   0,
-		resolver:       NewEndpointResolverWithFunc(cfg.GetEndpoints),
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"@1052-2nd/gpt-5.5","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"@1052-2nd/deepseek-v4-pro","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -669,6 +699,73 @@ func TestHandleProxyEndpointSelectorModelSuffixDoesNotOverrideEndpointModel(t *t
 	}
 	if got := rec.Header().Get("X-ccNexus-Endpoint"); got != "1052-2nd" {
 		t.Fatalf("expected request to select 1052-2nd, got %q", got)
+	}
+}
+
+func TestHandleProxyMarksVerifiedEndpointModelFailedWhenUpstreamModelNotFound(t *testing.T) {
+	primaryHits := 0
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"No available channel for model claude-opus-4-7 under group primary"}}`))
+	}))
+	defer primary.Close()
+
+	fallbackHits := 0
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		if r.URL.Path != "/v1/messages" {
+			t.Fatalf("expected Claude upstream path, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_ok","type":"message","role":"assistant","content":[{"type":"text","text":"fallback ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer fallback.Close()
+
+	primaryEndpoint := failoverPolicyTestEndpoint("Primary", primary.URL)
+	primaryEndpoint.Transformer = "claude"
+	primaryEndpoint.Model = "claude-opus-4-7"
+	fallbackEndpoint := failoverPolicyTestEndpoint("Fallback", fallback.URL)
+	fallbackEndpoint.Transformer = "claude"
+	fallbackEndpoint.Model = "claude-opus-4-7"
+	p := newFailoverPolicyTestProxy([]config.Endpoint{primaryEndpoint, fallbackEndpoint}, primary.Client())
+	store := &fakeEndpointModelStore{models: []storage.EndpointModel{
+		{EndpointName: "Primary", ModelID: "claude-opus-4-7", Source: storage.EndpointModelSourceLegacy, Enabled: true, VerificationStatus: storage.EndpointModelStatusVerified, UpstreamTransformer: "claude"},
+		{EndpointName: "Fallback", ModelID: "claude-opus-4-7", Source: storage.EndpointModelSourceLegacy, Enabled: true, VerificationStatus: storage.EndpointModelStatusVerified, UpstreamTransformer: "claude"},
+	}}
+	p.modelRegistry = newModelRegistry(store)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-opus-4-7","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	p.handleProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected fallback success, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if primaryHits != 1 || fallbackHits != 1 {
+		t.Fatalf("expected one primary model failure then fallback, got primary=%d fallback=%d", primaryHits, fallbackHits)
+	}
+	model, ok := store.endpointModel("Primary", "claude-opus-4-7")
+	if !ok {
+		t.Fatal("expected primary endpoint model to remain stored")
+	}
+	if model.VerificationStatus != storage.EndpointModelStatusFailed {
+		t.Fatalf("expected primary model status failed, got %#v", model)
+	}
+	if model.FailureKind != "unsupported_model" {
+		t.Fatalf("expected unsupported_model failure kind, got %#v", model)
+	}
+	if !strings.Contains(model.FailureMessage, "model_not_found") {
+		t.Fatalf("expected upstream failure summary to be stored, got %#v", model.FailureMessage)
+	}
+	if model.LastAttemptAt == nil || model.NextAttemptAt == nil {
+		t.Fatalf("expected retry timestamps to be set, got %#v", model)
+	}
+	if time.Until(*model.NextAttemptAt) < 6*24*time.Hour {
+		t.Fatalf("expected unsupported model retry to be delayed about a week, got %#v", model.NextAttemptAt)
 	}
 }
 

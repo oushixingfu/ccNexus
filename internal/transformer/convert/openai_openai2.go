@@ -92,7 +92,7 @@ func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
 	_, removedMaxOutputTokens := body["max_output_tokens"]
 	delete(body, "max_output_tokens")
 
-	rawInput, ok := body["input"].([]interface{})
+	rawInput, ok := body["input"]
 	if !ok {
 		if removedMaxOutputTokens {
 			return json.Marshal(body)
@@ -100,7 +100,7 @@ func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
 		return openai2Req, nil
 	}
 
-	normalizedInput, changed := normalizeOpenAI2InputForUpstream(rawInput)
+	normalizedInput, changed := normalizeOpenAI2RequestInputForUpstream(rawInput)
 	if !changed && !removedMaxOutputTokens {
 		return openai2Req, nil
 	}
@@ -109,6 +109,28 @@ func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
 		body["input"] = normalizedInput
 	}
 	return json.Marshal(body)
+}
+
+func normalizeOpenAI2RequestInputForUpstream(input interface{}) ([]interface{}, bool) {
+	if text, ok := input.(string); ok {
+		return []interface{}{
+			map[string]interface{}{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "input_text",
+						"text": text,
+					},
+				},
+			},
+		}, true
+	}
+
+	rawInput, ok := input.([]interface{})
+	if !ok {
+		return nil, false
+	}
+	return normalizeOpenAI2InputForUpstream(rawInput)
 }
 
 func normalizeOpenAI2InputForUpstream(input []interface{}) ([]interface{}, bool) {

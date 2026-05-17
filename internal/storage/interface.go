@@ -25,6 +25,38 @@ type Endpoint struct {
 	UpdatedAt               time.Time `json:"updatedAt"`
 }
 
+const (
+	EndpointModelSourceManual     = "manual"
+	EndpointModelSourceDiscovered = "discovered"
+	EndpointModelSourceLegacy     = "legacy"
+
+	EndpointModelStatusUnknown    = "unknown"
+	EndpointModelStatusDiscovered = "discovered"
+	EndpointModelStatusVerifying  = "verifying"
+	EndpointModelStatusVerified   = "verified"
+	EndpointModelStatusFailed     = "failed"
+)
+
+type EndpointModel struct {
+	ID                    int64      `json:"id"`
+	EndpointName          string     `json:"endpointName"`
+	ModelID               string     `json:"modelId"`
+	DisplayName           string     `json:"displayName"`
+	Source                string     `json:"source"`
+	Enabled               bool       `json:"enabled"`
+	VerificationStatus    string     `json:"verificationStatus"`
+	UpstreamTransformer   string     `json:"upstreamTransformer"`
+	FailureKind           string     `json:"failureKind"`
+	FailureMessage        string     `json:"failureMessage"`
+	LastVerifiedAt        *time.Time `json:"lastVerifiedAt,omitempty"`
+	VerificationExpiresAt *time.Time `json:"verificationExpiresAt,omitempty"`
+	LastAttemptAt         *time.Time `json:"lastAttemptAt,omitempty"`
+	NextAttemptAt         *time.Time `json:"nextAttemptAt,omitempty"`
+	SortOrder             int        `json:"sortOrder"`
+	CreatedAt             time.Time  `json:"createdAt"`
+	UpdatedAt             time.Time  `json:"updatedAt"`
+}
+
 type EndpointCredential struct {
 	ID            int64                 `json:"id"`
 	EndpointName  string                `json:"endpointName"`
@@ -148,6 +180,11 @@ type Storage interface {
 	SaveEndpoint(ep *Endpoint) error
 	UpdateEndpoint(ep *Endpoint) error
 	DeleteEndpoint(name string) error
+	UpsertEndpointModel(model *EndpointModel) error
+	GetEndpointModels(endpointName string) ([]EndpointModel, error)
+	GetVerifiedEndpointModels(modelID string) ([]EndpointModel, error)
+	GetAllVerifiedEndpointModels() ([]EndpointModel, error)
+	DeleteEndpointModel(endpointName string, modelID string) error
 	GetEndpointCredentials(endpointName string) ([]EndpointCredential, error)
 	GetCredentialByID(id int64) (*EndpointCredential, error)
 	SaveEndpointCredential(cred *EndpointCredential) error

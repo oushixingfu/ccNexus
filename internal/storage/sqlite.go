@@ -133,6 +133,27 @@ func (s *SQLiteStorage) initSchema() error {
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS endpoint_models (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		endpoint_name TEXT NOT NULL,
+		model_id TEXT NOT NULL,
+		display_name TEXT DEFAULT '',
+		source TEXT NOT NULL DEFAULT 'manual',
+		enabled BOOLEAN NOT NULL DEFAULT TRUE,
+		verification_status TEXT NOT NULL DEFAULT 'unknown',
+		upstream_transformer TEXT DEFAULT '',
+		failure_kind TEXT DEFAULT '',
+		failure_message TEXT DEFAULT '',
+		last_verified_at DATETIME,
+		verification_expires_at DATETIME,
+		last_attempt_at DATETIME,
+		next_attempt_at DATETIME,
+		sort_order INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(endpoint_name, model_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS credential_rate_limits (
 		credential_id INTEGER PRIMARY KEY,
 		snapshot_json TEXT,
@@ -186,6 +207,8 @@ func (s *SQLiteStorage) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_endpoint ON endpoint_credentials(endpoint_name);
 	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_status ON endpoint_credentials(status);
 	CREATE INDEX IF NOT EXISTS idx_endpoint_credentials_expires_at ON endpoint_credentials(expires_at);
+	CREATE INDEX IF NOT EXISTS idx_endpoint_models_model_status ON endpoint_models(model_id, enabled, verification_status);
+	CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint ON endpoint_models(endpoint_name);
 	CREATE INDEX IF NOT EXISTS idx_credential_rate_limits_updated ON credential_rate_limits(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_credential_usage_endpoint ON credential_usage(endpoint_name);
 	CREATE INDEX IF NOT EXISTS idx_endpoint_runtime_status_updated ON endpoint_runtime_status(updated_at);
@@ -215,6 +238,9 @@ func (s *SQLiteStorage) initSchema() error {
 		return err
 	}
 	if err := s.migrateEndpointRuntimeFailureStatusCode(); err != nil {
+		return err
+	}
+	if err := s.backfillEndpointModelsFromLegacyModel(); err != nil {
 		return err
 	}
 
@@ -452,6 +478,9 @@ func (s *SQLiteStorage) SaveEndpoint(ep *Endpoint) error {
 		return err
 	}
 	ep.ID = id
+	if err := s.upsertLegacyEndpointModelLocked(ep); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -505,6 +534,7 @@ func (s *SQLiteStorage) UpdateEndpointByName(oldName string, ep *Endpoint) error
 
 	if ep.Name != oldName {
 		renameQueries := []string{
+			`UPDATE endpoint_models SET endpoint_name=? WHERE endpoint_name=?`,
 			`UPDATE endpoint_credentials SET endpoint_name=? WHERE endpoint_name=?`,
 			`UPDATE credential_usage SET endpoint_name=? WHERE endpoint_name=?`,
 			`UPDATE endpoint_runtime_status SET endpoint_name=? WHERE endpoint_name=?`,
@@ -515,6 +545,19 @@ func (s *SQLiteStorage) UpdateEndpointByName(oldName string, ep *Endpoint) error
 			if _, err := tx.Exec(query, ep.Name, oldName); err != nil {
 				return err
 			}
+		}
+	}
+
+	if strings.TrimSpace(ep.Model) != "" {
+		if err := upsertEndpointModelWithExec(tx, &EndpointModel{
+			EndpointName:        ep.Name,
+			ModelID:             ep.Model,
+			Source:              EndpointModelSourceLegacy,
+			Enabled:             true,
+			VerificationStatus:  EndpointModelStatusVerified,
+			UpstreamTransformer: ep.Transformer,
+		}); err != nil {
+			return err
 		}
 	}
 
@@ -529,6 +572,9 @@ func (s *SQLiteStorage) DeleteEndpoint(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, err := s.db.Exec(`DELETE FROM endpoint_models WHERE endpoint_name=?`, name); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`
 		DELETE FROM credential_rate_limits
 		WHERE credential_id IN (

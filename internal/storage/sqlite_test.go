@@ -358,6 +358,78 @@ func TestUpdateEndpointByNameRenamesReferences(t *testing.T) {
 	}
 }
 
+func TestEndpointModelsBackfillLegacyEndpointModel(t *testing.T) {
+	store, err := NewSQLiteStorage(filepath.Join(t.TempDir(), "ccnexus-test.db"))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	defer store.Close()
+
+	endpoint := &Endpoint{
+		Name:        "Claude",
+		APIUrl:      "https://api.anthropic.com",
+		APIKey:      "test-key",
+		AuthMode:    "api_key",
+		Enabled:     true,
+		Transformer: "claude",
+		Model:       "claude-sonnet-4-5-20250929",
+	}
+	if err := store.SaveEndpoint(endpoint); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+
+	models, err := store.GetEndpointModels("Claude")
+	if err != nil {
+		t.Fatalf("get endpoint models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("expected one backfilled model, got %#v", models)
+	}
+	model := models[0]
+	if model.ModelID != "claude-sonnet-4-5-20250929" || model.VerificationStatus != EndpointModelStatusVerified || !model.Enabled {
+		t.Fatalf("unexpected backfilled model: %#v", model)
+	}
+}
+
+func TestEndpointModelsRenameAndDeleteWithEndpoint(t *testing.T) {
+	store, err := NewSQLiteStorage(filepath.Join(t.TempDir(), "ccnexus-test.db"))
+	if err != nil {
+		t.Fatalf("new storage: %v", err)
+	}
+	defer store.Close()
+
+	endpoint := &Endpoint{Name: "Primary", APIUrl: "https://api.example.com", APIKey: "test-key", AuthMode: "api_key", Enabled: true, Transformer: "openai", Model: "gpt-4.1"}
+	if err := store.SaveEndpoint(endpoint); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+	if err := store.UpsertEndpointModel(&EndpointModel{EndpointName: "Primary", ModelID: "gpt-5.5", Source: EndpointModelSourceManual, Enabled: true, VerificationStatus: EndpointModelStatusVerified, UpstreamTransformer: "openai2"}); err != nil {
+		t.Fatalf("upsert model: %v", err)
+	}
+
+	endpoint.Name = "Renamed"
+	if err := store.UpdateEndpointByName("Primary", endpoint); err != nil {
+		t.Fatalf("rename endpoint: %v", err)
+	}
+	models, err := store.GetEndpointModels("Renamed")
+	if err != nil {
+		t.Fatalf("get renamed models: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("expected two renamed models, got %#v", models)
+	}
+
+	if err := store.DeleteEndpoint("Renamed"); err != nil {
+		t.Fatalf("delete endpoint: %v", err)
+	}
+	models, err = store.GetEndpointModels("Renamed")
+	if err != nil {
+		t.Fatalf("get deleted models: %v", err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("expected endpoint model rows to be deleted, got %#v", models)
+	}
+}
+
 func TestMigrateEndpointRuntimeFailureStatusCode(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ccnexus.db")
 	db, err := sql.Open("sqlite", dbPath)

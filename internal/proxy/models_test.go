@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/storage"
 )
 
 func TestLoadModelsUsesConfiguredEndpointModelWithoutFetchingUpstream(t *testing.T) {
@@ -108,5 +109,27 @@ func TestLoadModelsFetchesUpstreamWhenEndpointModelIsEmpty(t *testing.T) {
 	}
 	if models[0].ID != "upstream-model-a" || models[1].ID != "upstream-model-b" {
 		t.Fatalf("unexpected upstream models: %#v", models)
+	}
+}
+
+func TestLoadModelsReturnsOnlyVerifiedEndpointModels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{Name: "ClaudeA", APIUrl: "https://a.example.com", APIKey: "test-key", AuthMode: config.AuthModeAPIKey, Enabled: true, Transformer: "claude", Model: "legacy-default"},
+		{Name: "ClaudeB", APIUrl: "https://b.example.com", APIKey: "test-key", AuthMode: config.AuthModeAPIKey, Enabled: true, Transformer: "claude", Model: "legacy-default"},
+	})
+	store := &fakeEndpointModelStore{models: []storage.EndpointModel{
+		{EndpointName: "ClaudeA", ModelID: "claude-sonnet-4-5-20250929", Enabled: true, VerificationStatus: storage.EndpointModelStatusVerified, UpstreamTransformer: "claude"},
+		{EndpointName: "ClaudeB", ModelID: "claude-sonnet-4-5-20250929", Enabled: true, VerificationStatus: storage.EndpointModelStatusDiscovered, UpstreamTransformer: "claude"},
+	}}
+	p := &Proxy{config: cfg, modelsCache: NewModelsCache(30), modelRegistry: newModelRegistry(store)}
+
+	models := p.loadModelsForResponse(true)
+
+	if len(models) != 1 {
+		t.Fatalf("expected one verified model, got %#v", models)
+	}
+	if models[0].ID != "claude-sonnet-4-5-20250929" || models[0].EndpointID != "ClaudeA" {
+		t.Fatalf("unexpected verified model response: %#v", models[0])
 	}
 }

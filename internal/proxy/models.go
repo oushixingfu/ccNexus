@@ -181,6 +181,13 @@ func (p *Proxy) fetchModelsFromEndpoint(ep config.Endpoint) ([]ModelInfo, error)
 	return models, nil
 }
 
+func (p *Proxy) FetchModelsForEndpoint(ep config.Endpoint) ([]ModelInfo, error) {
+	if p == nil {
+		return nil, fmt.Errorf("proxy is nil")
+	}
+	return p.fetchModelsFromEndpoint(ep)
+}
+
 func (p *Proxy) fetchOpenAIModelsWithRequest(req *http.Request, endpointName string) ([]ModelInfo, error) {
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -285,6 +292,32 @@ func (p *Proxy) getDefaultModels(ep config.Endpoint) []ModelInfo {
 }
 
 func (p *Proxy) getModelsForEndpoint(ep config.Endpoint) ([]ModelInfo, bool) {
+	if p.modelRegistry != nil {
+		endpointModels, ok, err := p.modelRegistry.modelsForEndpoint(ep.Name)
+		if err != nil {
+			logger.Debug("Failed to load verified endpoint models from %s: %v", ep.Name, err)
+			return nil, false
+		}
+		if ok && len(endpointModels) > 0 {
+			verified := verifiedEndpointModels(endpointModels, time.Now().UTC())
+			models := make([]ModelInfo, 0, len(verified))
+			for _, model := range verified {
+				transformer := model.UpstreamTransformer
+				if strings.TrimSpace(transformer) == "" {
+					transformer = ep.Transformer
+				}
+				models = append(models, ModelInfo{
+					ID:         model.ModelID,
+					Object:     "model",
+					Created:    time.Now().Unix(),
+					OwnedBy:    providercompat.Owner(transformer),
+					EndpointID: model.EndpointName,
+				})
+			}
+			return models, true
+		}
+	}
+
 	if strings.TrimSpace(ep.Model) != "" {
 		return p.getDefaultModels(ep), true
 	}

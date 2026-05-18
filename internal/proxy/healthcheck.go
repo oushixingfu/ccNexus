@@ -255,6 +255,10 @@ func (p *Proxy) runHealthCheckRound() {
 
 		result := p.probeEndpointHealth(endpoint)
 		if result.Success {
+			if p.shouldKeepRuntimeBlockAfterHealthSuccess(name) {
+				logger.Info("[HEALTHCHECK] Endpoint %s probe succeeded but runtime block remains active (reason=%s)", name, sanitizeLogField(p.runtimeBlockedReason(name)))
+				continue
+			}
 			status := p.recordEndpointSuccess(name)
 			p.emitEndpointRuntimeEvent(name, "success", status)
 			p.clearEndpointCooldown(name)
@@ -279,6 +283,25 @@ func (p *Proxy) runHealthCheckRound() {
 			logger.Warn("[HEALTHCHECK] Endpoint %s still unhealthy (status=%d): %s", name, result.StatusCode, result.Error)
 		}
 	}
+}
+
+func (p *Proxy) shouldKeepRuntimeBlockAfterHealthSuccess(endpointName string) bool {
+	if p == nil || strings.TrimSpace(endpointName) == "" {
+		return false
+	}
+	if shouldBlockHealthCheckRecoveryReason(p.runtimeBlockedReason(endpointName)) {
+		return true
+	}
+	if p.storage == nil {
+		return false
+	}
+	statuses, err := p.storage.GetEndpointRuntimeStatuses()
+	if err != nil {
+		logger.Warn("[HEALTHCHECK] Failed to load runtime status for %s: %v", endpointName, err)
+		return false
+	}
+	status := statuses[endpointName]
+	return status != nil && shouldBlockHealthCheckRecoveryReason(status.LastFailureReason)
 }
 
 func (p *Proxy) recordHealthCheckFailure(result healthCheckResult) {

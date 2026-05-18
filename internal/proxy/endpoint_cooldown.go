@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/logger"
 )
 
@@ -258,7 +259,7 @@ func shouldDeferHealthCheckForCooldownReason(reason string) bool {
 }
 
 func shouldBlockHealthCheckRecoveryReason(reason string) bool {
-	return sanitizeLogField(reason) == "quota_exhausted"
+	return endpointstate.IsHardUnavailableReason(sanitizeLogField(reason))
 }
 
 func (p *Proxy) cooldownDurationForReason(reason string, headers http.Header) time.Duration {

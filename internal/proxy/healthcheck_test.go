@@ -352,7 +352,7 @@ func TestSeedHealthCheckBlocksExpiredQuotaFailureFromRequestPlan(t *testing.T) {
 	}
 }
 
-func TestExpiredQuotaBlockAutoReturnsAfterHealthProbeSucceeds(t *testing.T) {
+func TestExpiredQuotaBlockIsNotClearedByHealthProbeSuccess(t *testing.T) {
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()
 
@@ -386,12 +386,20 @@ func TestExpiredQuotaBlockAutoReturnsAfterHealthProbeSucceeds(t *testing.T) {
 	}
 
 	p.runHealthCheckRound()
-	if got := p.GetCurrentEndpointName(); got != "A" {
-		t.Fatalf("expected successful quota probe to auto-return to A, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "B" {
+		t.Fatalf("expected health probe not to auto-return quota-blocked A, got %q", got)
 	}
 	blocked := p.snapshotRuntimeBlockedEndpoints()
-	if _, ok := blocked["A"]; ok {
-		t.Fatal("expected successful quota probe to clear runtime block")
+	if blocked["A"] != "quota_exhausted" {
+		t.Fatalf("expected health probe not to clear quota runtime block, got %#v", blocked)
+	}
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	status := statuses["A"]
+	if status == nil || status.LastFailureReason != "quota_exhausted" {
+		t.Fatalf("expected persisted quota failure to remain after health success, got %#v", status)
 	}
 }
 

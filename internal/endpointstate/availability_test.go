@@ -38,6 +38,22 @@ func TestDeriveClearsFailureAfterLaterSuccess(t *testing.T) {
 	}
 }
 
+func TestDeriveKeepsHardUnavailableFailureAfterLaterSuccess(t *testing.T) {
+	failureAt := time.Now().Add(-time.Minute).UTC()
+	successAt := time.Now().UTC()
+	status := &storage.EndpointRuntimeStatus{
+		LastSuccessAt:         &successAt,
+		LastFailureAt:         &failureAt,
+		LastFailureReason:     "quota_exhausted",
+		LastFailureStatusCode: http.StatusForbidden,
+	}
+
+	projection := Derive(true, status)
+	if projection.Available || projection.Availability != Unavailable || projection.Reason != "quota_exhausted" || projection.StatusCode != http.StatusForbidden {
+		t.Fatalf("unexpected projection: %#v", projection)
+	}
+}
+
 func TestDeriveIgnoresReasonlessFailure(t *testing.T) {
 	failureAt := time.Now().UTC()
 	status := &storage.EndpointRuntimeStatus{

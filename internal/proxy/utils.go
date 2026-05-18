@@ -204,17 +204,39 @@ func isQuotaExhaustedHTTPFailure(statusCode int, body string) bool {
 		return false
 	}
 	lower := strings.ToLower(strings.TrimSpace(body))
+	if isTransientUpstreamStorageFailureBody(lower) {
+		return false
+	}
 	if strings.Contains(lower, "insufficient_user_quota") ||
 		strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "pre_consume_token_quota_failed") ||
+		strings.Contains(lower, "consume_token_quota_failed") ||
+		strings.Contains(lower, "quota_failed") ||
 		strings.Contains(lower, "quota_exhausted") ||
 		strings.Contains(lower, "quota exhausted") ||
+		strings.Contains(lower, "quota exceeded") ||
 		strings.Contains(lower, "exceeded your current quota") ||
+		strings.Contains(lower, "credits exhausted") ||
+		strings.Contains(lower, "out of credits") ||
 		strings.Contains(lower, "用户额度不足") ||
-		strings.Contains(lower, "余额不足") {
+		strings.Contains(lower, "额度不足") ||
+		strings.Contains(lower, "额度已用完") ||
+		strings.Contains(lower, "余额不足") ||
+		strings.Contains(lower, "余额已用完") {
 		return true
 	}
 	return strings.Contains(lower, "剩余额度") &&
 		(strings.Contains(lower, "0.000000") || strings.Contains(lower, "￥0") || strings.Contains(lower, "$0") || strings.Contains(lower, "＄0"))
+}
+
+func isTransientUpstreamStorageFailureBody(lowerBody string) bool {
+	lowerBody = strings.ToLower(strings.TrimSpace(lowerBody))
+	if lowerBody == "" {
+		return false
+	}
+	return strings.Contains(lowerBody, "database is locked") ||
+		strings.Contains(lowerBody, "sqlite_busy") ||
+		strings.Contains(lowerBody, "cannot start a transaction")
 }
 
 func isRateLimitedHTTPFailure(statusCode int, body string) bool {

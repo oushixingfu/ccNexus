@@ -19,7 +19,7 @@ func OpenAIReqToOpenAI2(openaiReq []byte, model string) ([]byte, error) {
 		"model":  model,
 		"stream": req.Stream,
 	}
-	if req.Temperature != nil {
+	if req.Temperature != nil && !shouldOmitResponsesTemperature(model) {
 		openai2Req["temperature"] = *req.Temperature
 	}
 	if req.Reasoning != nil {
@@ -91,17 +91,23 @@ func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
 
 	_, removedMaxOutputTokens := body["max_output_tokens"]
 	delete(body, "max_output_tokens")
+	_, removedTemperature := body["temperature"]
+	if shouldOmitResponsesTemperature(stringFromMap(body, "model")) {
+		delete(body, "temperature")
+	} else {
+		removedTemperature = false
+	}
 
 	rawInput, ok := body["input"]
 	if !ok {
-		if removedMaxOutputTokens {
+		if removedMaxOutputTokens || removedTemperature {
 			return json.Marshal(body)
 		}
 		return openai2Req, nil
 	}
 
 	normalizedInput, changed := normalizeOpenAI2RequestInputForUpstream(rawInput)
-	if !changed && !removedMaxOutputTokens {
+	if !changed && !removedMaxOutputTokens && !removedTemperature {
 		return openai2Req, nil
 	}
 
@@ -109,6 +115,11 @@ func NormalizeOpenAI2RequestForUpstream(openai2Req []byte) ([]byte, error) {
 		body["input"] = normalizedInput
 	}
 	return json.Marshal(body)
+}
+
+func shouldOmitResponsesTemperature(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(lower, "gpt-5")
 }
 
 func normalizeOpenAI2RequestInputForUpstream(input interface{}) ([]interface{}, bool) {

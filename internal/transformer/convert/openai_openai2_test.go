@@ -392,6 +392,54 @@ func TestOpenAI2StreamToOpenAIPreservesReasoningDelta(t *testing.T) {
 	}
 }
 
+func TestNormalizeOpenAI2RequestForUpstreamDropsGPT5Temperature(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"temperature":0.2,
+		"input":"hi"
+	}`
+
+	reqBytes, err := NormalizeOpenAI2RequestForUpstream([]byte(openai2Req))
+	if err != nil {
+		t.Fatalf("NormalizeOpenAI2RequestForUpstream failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal normalized req failed: %v", err)
+	}
+	if _, ok := req["temperature"]; ok {
+		t.Fatalf("did not expect temperature for GPT-5 Responses upstream, got %#v", req["temperature"])
+	}
+}
+
+func TestNormalizeOpenAI2RequestForUpstreamKeepsGPT4Temperature(t *testing.T) {
+	openai2Req := `{
+		"model":"gpt-4.1",
+		"stream":true,
+		"temperature":0,
+		"input":"hi"
+	}`
+
+	reqBytes, err := NormalizeOpenAI2RequestForUpstream([]byte(openai2Req))
+	if err != nil {
+		t.Fatalf("NormalizeOpenAI2RequestForUpstream failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal normalized req failed: %v", err)
+	}
+	temperature, ok := req["temperature"].(float64)
+	if !ok {
+		t.Fatalf("expected GPT-4 temperature to be preserved, got %#v", req["temperature"])
+	}
+	if temperature != 0 {
+		t.Fatalf("expected temperature=0, got %v", temperature)
+	}
+}
+
 func TestOpenAIReqToOpenAI2PreservesZeroTemperature(t *testing.T) {
 	openaiReq := `{
 		"model":"gpt-4.1",
@@ -416,6 +464,28 @@ func TestOpenAIReqToOpenAI2PreservesZeroTemperature(t *testing.T) {
 	}
 	if temperature != 0 {
 		t.Fatalf("expected temperature=0, got %v", temperature)
+	}
+}
+
+func TestOpenAIReqToOpenAI2DropsGPT5Temperature(t *testing.T) {
+	openaiReq := `{
+		"model":"gpt-5.5",
+		"stream":true,
+		"temperature":0.2,
+		"messages":[{"role":"user","content":"test"}]
+	}`
+
+	reqBytes, err := OpenAIReqToOpenAI2([]byte(openaiReq), "gpt-5.5")
+	if err != nil {
+		t.Fatalf("OpenAIReqToOpenAI2 failed: %v", err)
+	}
+
+	var req map[string]interface{}
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("unmarshal transformed req failed: %v", err)
+	}
+	if _, ok := req["temperature"]; ok {
+		t.Fatalf("did not expect temperature for GPT-5 Responses upstream, got %#v", req["temperature"])
 	}
 }
 

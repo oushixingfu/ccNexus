@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/providercompat"
 )
@@ -125,7 +126,8 @@ func (p *Proxy) seedHealthCheckWatchSet() {
 			p.registerForHealthCheck(name)
 			continue
 		}
-		failureAfterSuccess := status.LastSuccessAt == nil || status.LastFailureAt.After(*status.LastSuccessAt)
+		state := endpointstate.Derive(true, status)
+		failureAfterSuccess := !state.Available && state.Availability == endpointstate.Unavailable
 		restoredCooldown := false
 		if failureAfterSuccess || shouldRestoreDeferredCooldown(status.LastFailureReason, *status.LastFailureAt, p.cooldownDurationForReason(status.LastFailureReason, nil)) {
 			restoredCooldown = p.restoreEndpointCooldownFromRuntimeStatus(name, status.LastFailureReason, *status.LastFailureAt)

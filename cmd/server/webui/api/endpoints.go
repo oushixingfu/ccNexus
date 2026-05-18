@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/providercompat"
 	proxypkg "github.com/lich0821/ccNexus/internal/proxy"
@@ -144,15 +145,15 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 }
 
 func buildEndpointResponse(endpoint storage.Endpoint, status *storage.EndpointRuntimeStatus) endpointResponse {
-	available, availability, reason, statusCode := deriveEndpointAvailability(endpoint.Enabled, status)
+	state := endpointstate.Derive(endpoint.Enabled, status)
 	effective := effectiveEndpointUpstreams(endpoint)
 	return endpointResponse{
 		Endpoint:                         endpoint,
 		RuntimeStatus:                    status,
-		Available:                        available,
-		Availability:                     availability,
-		AvailabilityReason:               reason,
-		AvailabilityStatusCode:           statusCode,
+		Available:                        state.Available,
+		Availability:                     state.Availability,
+		AvailabilityReason:               state.Reason,
+		AvailabilityStatusCode:           state.StatusCode,
 		EffectiveClaudeUpstream:          effective["claude"],
 		EffectiveOpenAIChatUpstream:      effective["openai_chat"],
 		EffectiveOpenAIResponsesUpstream: effective["openai_responses"],
@@ -183,19 +184,6 @@ func effectiveEndpointUpstreams(endpoint storage.Endpoint) map[string]string {
 		"openai_chat":      proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIChat, configEndpoint),
 		"openai_responses": proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIResponses, configEndpoint),
 	}
-}
-
-func deriveEndpointAvailability(enabled bool, status *storage.EndpointRuntimeStatus) (bool, string, string, int) {
-	if !enabled {
-		return false, "disabled", "", 0
-	}
-	if status == nil || strings.TrimSpace(status.LastFailureReason) == "" || status.LastFailureAt == nil {
-		return true, "available", "", 0
-	}
-	if status.LastSuccessAt != nil && status.LastSuccessAt.After(*status.LastFailureAt) {
-		return true, "available", "", 0
-	}
-	return false, "unavailable", strings.TrimSpace(status.LastFailureReason), status.LastFailureStatusCode
 }
 
 // createEndpoint creates a new endpoint

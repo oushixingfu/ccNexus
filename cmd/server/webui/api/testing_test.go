@@ -370,6 +370,29 @@ func TestEndpointTestDoesNotFallbackWhenAutoSelectDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildEndpointTestAttemptsPrefersEffectiveResponsesUpstream(t *testing.T) {
+	endpoint := &storage.Endpoint{
+		Name:                    "multi-protocol",
+		APIUrl:                  "https://gateway.example.com",
+		Transformer:             "openai",
+		Model:                   "gpt-5.5",
+		AutoSelect:              true,
+		SupportsOpenAIResponses: true,
+		SupportsOpenAIChat:      true,
+	}
+
+	attempts := buildEndpointTestAttempts(endpoint)
+	if len(attempts) < 2 {
+		t.Fatalf("expected at least responses and chat attempts, got %#v", attempts)
+	}
+	if attempts[0].transformer != "openai2" {
+		t.Fatalf("expected endpoint test to validate effective Responses upstream first, got %#v", attempts)
+	}
+	if attempts[1].transformer != "openai" {
+		t.Fatalf("expected chat fallback attempt second, got %#v", attempts)
+	}
+}
+
 func TestSendTestRequestUsesKimiPromptAndTokenBudget(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

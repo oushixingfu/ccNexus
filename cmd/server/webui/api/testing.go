@@ -159,11 +159,15 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 		if candidate == "" || candidate == "auto" || seen[candidate] {
 			return
 		}
+		fallbackFrom := ""
+		if strings.TrimSpace(protocolFallbackFrom) != "" {
+			fallbackFrom = providercompat.NormalizeTransformer(protocolFallbackFrom)
+		}
 		seen[candidate] = true
 		attempts = append(attempts, endpointTestAttempt{
 			transformer:           candidate,
-			protocolFallbackFrom:  providercompat.NormalizeTransformer(protocolFallbackFrom),
-			isProtocolFallbackTry: strings.TrimSpace(protocolFallbackFrom) != "",
+			protocolFallbackFrom:  fallbackFrom,
+			isProtocolFallbackTry: fallbackFrom != "",
 		})
 	}
 	add := func(candidate string) {
@@ -171,6 +175,19 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 	}
 	addProtocolFallback := func(candidate string, protocolFallbackFrom string) {
 		addAttempt(candidate, protocolFallbackFrom)
+	}
+
+	if endpoint.AutoSelect {
+		configEndpoint := configEndpointFromStorage(*endpoint)
+		for _, clientFormat := range endpointTestClientFormatOrder(endpoint, transformer) {
+			add(proxy.EffectiveUpstreamTransformerForClientFormat(clientFormat, configEndpoint))
+		}
+		if endpointTestAttemptsIncludeTransformer(attempts, providercompat.TransformerOpenAI2) {
+			addProtocolFallback(providerTransformer, providercompat.TransformerOpenAI2)
+		}
+		if len(attempts) > 0 {
+			return attempts
+		}
 	}
 
 	switch transformer {
@@ -215,6 +232,50 @@ func buildEndpointTestAttempts(endpoint *storage.Endpoint) []endpointTestAttempt
 		add(providercompat.InferEndpointTransformer(endpoint.APIUrl, endpoint.Model, endpoint.Transformer))
 	}
 	return attempts
+}
+
+func endpointTestClientFormatOrder(endpoint *storage.Endpoint, transformer string) []proxy.ClientFormat {
+	if endpoint == nil {
+		return nil
+	}
+	switch {
+	case transformer == providercompat.TransformerClaude:
+		return []proxy.ClientFormat{
+			proxy.ClientFormatClaude,
+			proxy.ClientFormatOpenAIResponses,
+			proxy.ClientFormatOpenAIChat,
+		}
+	case transformer == providercompat.TransformerOpenAI2 ||
+		endpoint.SupportsOpenAIResponses ||
+		providercompat.IsOpenAIResponsesModel(endpoint.Model):
+		return []proxy.ClientFormat{
+			proxy.ClientFormatOpenAIResponses,
+			proxy.ClientFormatOpenAIChat,
+			proxy.ClientFormatClaude,
+		}
+	case providercompat.IsOpenAIChatTransformer(transformer):
+		return []proxy.ClientFormat{
+			proxy.ClientFormatOpenAIChat,
+			proxy.ClientFormatOpenAIResponses,
+			proxy.ClientFormatClaude,
+		}
+	default:
+		return []proxy.ClientFormat{
+			proxy.ClientFormatOpenAIResponses,
+			proxy.ClientFormatOpenAIChat,
+			proxy.ClientFormatClaude,
+		}
+	}
+}
+
+func endpointTestAttemptsIncludeTransformer(attempts []endpointTestAttempt, transformer string) bool {
+	normalized := providercompat.NormalizeTransformer(transformer)
+	for _, attempt := range attempts {
+		if providercompat.NormalizeTransformer(attempt.transformer) == normalized {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldRunEndpointTestProtocolFallback(fromTransformer string, err error) bool {

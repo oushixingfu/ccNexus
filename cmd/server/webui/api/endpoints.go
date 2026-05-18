@@ -161,7 +161,16 @@ func buildEndpointResponse(endpoint storage.Endpoint, status *storage.EndpointRu
 }
 
 func effectiveEndpointUpstreams(endpoint storage.Endpoint) map[string]string {
-	configEndpoint := config.Endpoint{
+	configEndpoint := configEndpointFromStorage(endpoint)
+	return map[string]string{
+		"claude":           proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatClaude, configEndpoint),
+		"openai_chat":      proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIChat, configEndpoint),
+		"openai_responses": proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIResponses, configEndpoint),
+	}
+}
+
+func configEndpointFromStorage(endpoint storage.Endpoint) config.Endpoint {
+	return config.Endpoint{
 		Name:                    endpoint.Name,
 		APIUrl:                  endpoint.APIUrl,
 		APIKey:                  endpoint.APIKey,
@@ -178,11 +187,6 @@ func effectiveEndpointUpstreams(endpoint storage.Endpoint) map[string]string {
 		PreferredClaudeUpstream: endpoint.PreferredClaudeUpstream,
 		PreferredOpenAIUpstream: endpoint.PreferredOpenAIUpstream,
 		Remark:                  endpoint.Remark,
-	}
-	return map[string]string{
-		"claude":           proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatClaude, configEndpoint),
-		"openai_chat":      proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIChat, configEndpoint),
-		"openai_responses": proxypkg.EffectiveUpstreamTransformerForClientFormat(proxypkg.ClientFormatOpenAIResponses, configEndpoint),
 	}
 }
 

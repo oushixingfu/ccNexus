@@ -4,14 +4,9 @@ import (
 	"strings"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/providercompat"
 )
-
-type endpointUpstreamCapabilities struct {
-	claudeResponses bool
-	openAIChat      bool
-	openAIResponses bool
-}
 
 func endpointForClientFormat(clientFormat ClientFormat, endpoint config.Endpoint) config.Endpoint {
 	if !endpoint.AutoSelect {
@@ -109,7 +104,7 @@ func shouldPreferResponsesForClaudeClient(endpoint config.Endpoint, native strin
 	return native == providercompat.TransformerOpenAI2 || providercompat.IsOpenAIResponsesModel(endpoint.Model)
 }
 
-func selectPreferredUpstream(preference string, endpoint config.Endpoint, caps endpointUpstreamCapabilities) string {
+func selectPreferredUpstream(preference string, endpoint config.Endpoint, caps endpointstate.Capabilities) string {
 	preferred := config.NormalizeEndpointUpstreamPreference(preference)
 	if preferred == "" {
 		return ""
@@ -123,26 +118,17 @@ func selectPreferredUpstream(preference string, endpoint config.Endpoint, caps e
 	return ""
 }
 
-func capabilitiesForEndpoint(endpoint config.Endpoint) endpointUpstreamCapabilities {
-	native := providercompat.NormalizeTransformer(endpoint.Transformer)
-	return endpointUpstreamCapabilities{
-		claudeResponses: endpoint.SupportsClaudeMessages || native == providercompat.TransformerClaude,
-		openAIChat:      endpoint.SupportsOpenAIChat || providercompat.IsOpenAIChatTransformer(native),
-		openAIResponses: endpoint.SupportsOpenAIResponses || native == providercompat.TransformerOpenAI2,
-	}
+func capabilitiesForEndpoint(endpoint config.Endpoint) endpointstate.Capabilities {
+	return endpointstate.DeriveCapabilities(
+		endpoint.Transformer,
+		endpoint.SupportsClaudeMessages,
+		endpoint.SupportsOpenAIChat,
+		endpoint.SupportsOpenAIResponses,
+	)
 }
 
-func supportsUpstreamTransformer(transformerName string, caps endpointUpstreamCapabilities) bool {
-	switch providercompat.NormalizeTransformer(transformerName) {
-	case providercompat.TransformerClaude:
-		return caps.claudeResponses
-	case providercompat.TransformerOpenAI2:
-		return caps.openAIResponses
-	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		return caps.openAIChat
-	default:
-		return false
-	}
+func supportsUpstreamTransformer(transformerName string, caps endpointstate.Capabilities) bool {
+	return caps.SupportsTransformer(transformerName)
 }
 
 func openAIChatTransformerForEndpoint(endpoint config.Endpoint) string {

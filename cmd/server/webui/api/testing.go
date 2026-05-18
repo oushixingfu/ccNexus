@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/providercompat"
 	"github.com/lich0821/ccNexus/internal/proxy"
@@ -507,54 +508,7 @@ func (h *Handler) persistEndpointTestProtocolSuccess(endpointName, transformer s
 }
 
 func applyEndpointTestProtocolSuccess(endpoint *storage.Endpoint, transformer string) bool {
-	if endpoint == nil {
-		return false
-	}
-
-	before := *endpoint
-	if !endpoint.AutoSelect {
-		return false
-	}
-	normalized := providercompat.NormalizeTransformer(transformer)
-	switch normalized {
-	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		endpoint.SupportsOpenAIChat = true
-		if shouldPreserveEndpointTestResponsesAfterChatSuccess(before.Transformer, before.SupportsOpenAIResponses, before.APIUrl, before.Model) {
-			endpoint.SupportsOpenAIResponses = true
-		} else {
-			endpoint.Transformer = normalized
-			endpoint.SupportsOpenAIResponses = false
-			endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
-		}
-	case providercompat.TransformerOpenAI2:
-		endpoint.SupportsOpenAIResponses = true
-		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2
-	case providercompat.TransformerClaude:
-		endpoint.SupportsClaudeMessages = true
-		endpoint.PreferredClaudeUpstream = providercompat.TransformerClaude
-	default:
-		return false
-	}
-
-	return endpoint.AutoSelect != before.AutoSelect ||
-		endpoint.Transformer != before.Transformer ||
-		endpoint.SupportsOpenAIChat != before.SupportsOpenAIChat ||
-		endpoint.SupportsOpenAIResponses != before.SupportsOpenAIResponses ||
-		endpoint.SupportsClaudeMessages != before.SupportsClaudeMessages ||
-		endpoint.PreferredOpenAIUpstream != before.PreferredOpenAIUpstream ||
-		endpoint.PreferredClaudeUpstream != before.PreferredClaudeUpstream
-}
-
-func shouldPreserveEndpointTestResponsesAfterChatSuccess(transformer string, supportsResponses bool, apiURL string, model string) bool {
-	if supportsResponses {
-		return true
-	}
-	native := providercompat.NormalizeTransformer(transformer)
-	if native != providercompat.TransformerOpenAI2 {
-		return false
-	}
-	inferred := providercompat.NormalizeTransformer(providercompat.InferProviderTransformer(apiURL, model))
-	return !providercompat.IsOpenAIChatTransformer(inferred)
+	return endpointstate.ApplyProtocolSuccessToStorageEndpoint(endpoint, transformer, endpointstate.ProtocolSuccessOptions{RequireAutoSelect: true})
 }
 
 func isEventStreamResponse(contentType string, body []byte) bool {

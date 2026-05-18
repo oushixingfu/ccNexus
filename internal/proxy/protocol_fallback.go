@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/providercompat"
 	"github.com/lich0821/ccNexus/internal/storage"
@@ -150,51 +151,7 @@ func (p *Proxy) rememberProtocolFallbackSuccess(endpoint config.Endpoint, upstre
 }
 
 func applyProtocolSuccessToEndpoint(endpoint *config.Endpoint, upstreamTransformer string) bool {
-	if endpoint == nil {
-		return false
-	}
-	before := *endpoint
-	endpoint.AutoSelect = true
-	normalized := providercompat.NormalizeTransformer(upstreamTransformer)
-	switch normalized {
-	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		endpoint.SupportsOpenAIChat = true
-		if shouldPreserveResponsesAfterChatSuccess(before.Transformer, before.SupportsOpenAIResponses, before.APIUrl, before.Model) {
-			endpoint.SupportsOpenAIResponses = true
-		} else {
-			endpoint.Transformer = normalized
-			endpoint.SupportsOpenAIResponses = false
-			endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
-		}
-	case providercompat.TransformerOpenAI2:
-		endpoint.SupportsOpenAIResponses = true
-		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2
-	case providercompat.TransformerClaude:
-		endpoint.SupportsClaudeMessages = true
-		endpoint.PreferredClaudeUpstream = providercompat.TransformerClaude
-	default:
-		return false
-	}
-	config.ApplyEndpointAuthModeRules(endpoint)
-	return endpoint.AutoSelect != before.AutoSelect ||
-		endpoint.Transformer != before.Transformer ||
-		endpoint.SupportsOpenAIChat != before.SupportsOpenAIChat ||
-		endpoint.SupportsOpenAIResponses != before.SupportsOpenAIResponses ||
-		endpoint.SupportsClaudeMessages != before.SupportsClaudeMessages ||
-		endpoint.PreferredOpenAIUpstream != before.PreferredOpenAIUpstream ||
-		endpoint.PreferredClaudeUpstream != before.PreferredClaudeUpstream
-}
-
-func shouldPreserveResponsesAfterChatSuccess(transformer string, supportsResponses bool, apiURL string, model string) bool {
-	if supportsResponses {
-		return true
-	}
-	native := providercompat.NormalizeTransformer(transformer)
-	if native != providercompat.TransformerOpenAI2 {
-		return false
-	}
-	inferred := providercompat.NormalizeTransformer(providercompat.InferProviderTransformer(apiURL, model))
-	return !providercompat.IsOpenAIChatTransformer(inferred)
+	return endpointstate.ApplyProtocolSuccessToConfigEndpoint(endpoint, upstreamTransformer, endpointstate.ProtocolSuccessOptions{EnableAutoSelect: true})
 }
 
 func (p *Proxy) persistProtocolSuccess(endpointName string, upstreamTransformer string) {
@@ -219,36 +176,5 @@ func (p *Proxy) persistProtocolSuccess(endpointName string, upstreamTransformer 
 }
 
 func applyProtocolSuccessToStorageEndpoint(endpoint *storage.Endpoint, upstreamTransformer string) bool {
-	if endpoint == nil {
-		return false
-	}
-	before := *endpoint
-	endpoint.AutoSelect = true
-	normalized := providercompat.NormalizeTransformer(upstreamTransformer)
-	switch normalized {
-	case providercompat.TransformerOpenAI, providercompat.TransformerDeepSeek, providercompat.TransformerKimi:
-		endpoint.SupportsOpenAIChat = true
-		if shouldPreserveResponsesAfterChatSuccess(before.Transformer, before.SupportsOpenAIResponses, before.APIUrl, before.Model) {
-			endpoint.SupportsOpenAIResponses = true
-		} else {
-			endpoint.Transformer = normalized
-			endpoint.SupportsOpenAIResponses = false
-			endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI
-		}
-	case providercompat.TransformerOpenAI2:
-		endpoint.SupportsOpenAIResponses = true
-		endpoint.PreferredOpenAIUpstream = providercompat.TransformerOpenAI2
-	case providercompat.TransformerClaude:
-		endpoint.SupportsClaudeMessages = true
-		endpoint.PreferredClaudeUpstream = providercompat.TransformerClaude
-	default:
-		return false
-	}
-	return endpoint.AutoSelect != before.AutoSelect ||
-		endpoint.Transformer != before.Transformer ||
-		endpoint.SupportsOpenAIChat != before.SupportsOpenAIChat ||
-		endpoint.SupportsOpenAIResponses != before.SupportsOpenAIResponses ||
-		endpoint.SupportsClaudeMessages != before.SupportsClaudeMessages ||
-		endpoint.PreferredOpenAIUpstream != before.PreferredOpenAIUpstream ||
-		endpoint.PreferredClaudeUpstream != before.PreferredClaudeUpstream
+	return endpointstate.ApplyProtocolSuccessToStorageEndpoint(endpoint, upstreamTransformer, endpointstate.ProtocolSuccessOptions{EnableAutoSelect: true})
 }

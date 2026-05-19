@@ -100,6 +100,8 @@ func (p *Proxy) stopHealthCheckLoop() {
 }
 
 func (p *Proxy) seedHealthCheckWatchSet() {
+	p.watchUnifiedModelHotStandbyEndpoints()
+
 	currentName := p.GetCurrentEndpointName()
 	p.watchPreferredEndpointsForAutoReturn(currentName)
 
@@ -171,8 +173,7 @@ func shouldRestoreDeferredCooldown(reason string, lastFailureAt time.Time, durat
 }
 
 func (p *Proxy) watchPreferredEndpointsForAutoReturn(currentName string) {
-	if strings.TrimSpace(currentName) == "" ||
-		p.recoveredEndpointPolicy() != config.RecoveredEndpointPolicyAutoReturn {
+	if strings.TrimSpace(currentName) == "" {
 		return
 	}
 	for _, endpoint := range p.getEnabledEndpoints() {
@@ -262,14 +263,15 @@ func (p *Proxy) runHealthCheckRound() {
 			status := p.recordEndpointSuccess(name)
 			p.emitEndpointRuntimeEvent(name, "success", status)
 			p.clearEndpointCooldown(name)
-			p.unregisterFromHealthCheck(name)
+			if !p.shouldKeepEndpointWatchedForHotStandby(name) {
+				p.unregisterFromHealthCheck(name)
+			}
 			logger.Info("[HEALTHCHECK] Endpoint %s recovered (status=%d), clearing cooldown", name, result.StatusCode)
 
-			// Only auto-return when explicitly configured. The default
-			// deprioritize policy keeps the current endpoint stable.
+			// Sorted endpoint order is authoritative: once a preferred endpoint
+			// is healthy again, move traffic back to it.
 			currentName := p.GetCurrentEndpointName()
-			if p.recoveredEndpointPolicy() == config.RecoveredEndpointPolicyAutoReturn &&
-				currentName != "" &&
+			if currentName != "" &&
 				currentName != name &&
 				p.shouldPreferEndpoint(name, currentName) {
 				if err := p.SetCurrentEndpoint(name); err != nil {
@@ -283,6 +285,30 @@ func (p *Proxy) runHealthCheckRound() {
 			logger.Warn("[HEALTHCHECK] Endpoint %s still unhealthy (status=%d): %s", name, result.StatusCode, result.Error)
 		}
 	}
+}
+
+func (p *Proxy) unifiedHotStandbyEnabled() bool {
+	unified := p.unifiedModelConfig()
+	return unified.Enabled && unified.HotStandby
+}
+
+func (p *Proxy) watchUnifiedModelHotStandbyEndpoints() {
+	if !p.unifiedHotStandbyEnabled() {
+		return
+	}
+	for _, endpoint := range p.getEnabledEndpoints() {
+		if p.hasBlockedHealthCheckRecoveryFailure(endpoint.Name) {
+			continue
+		}
+		p.registerForHealthCheck(endpoint.Name)
+	}
+}
+
+func (p *Proxy) shouldKeepEndpointWatchedForHotStandby(endpointName string) bool {
+	if !p.unifiedHotStandbyEnabled() {
+		return false
+	}
+	return p.findEnabledEndpoint(endpointName) != nil
 }
 
 func (p *Proxy) shouldKeepRuntimeBlockAfterHealthSuccess(endpointName string) bool {

@@ -137,10 +137,8 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 
 	now := time.Now()
 	available := make([]config.Endpoint, 0, len(endpoints))
-	deprioritized := make([]config.Endpoint, 0)
 	nonBlockedFallback := make([]config.Endpoint, 0, len(endpoints))
 	runtimeBlocked := p.snapshotRuntimeBlockedEndpoints()
-	policy := p.recoveredEndpointPolicy()
 
 	p.cooldownMu.Lock()
 	defer p.cooldownMu.Unlock()
@@ -161,17 +159,13 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 			continue
 		}
 		if !cooldown.Until.After(now) {
-			if policy == config.RecoveredEndpointPolicyAutoReturn {
-				delete(p.endpointCooldowns, endpoint.Name)
-				available = append(available, endpoint)
-			} else {
-				deprioritized = append(deprioritized, endpoint)
-				logger.Debug("[COOLDOWN] Recovered endpoint deprioritized for request plan: %s %s cooldown_reason=%s",
-					endpoint.Name,
-					requestLogFields(obs, endpoint.Name, 0, 0, cooldown.Reason),
-					sanitizeLogField(cooldown.Reason),
-				)
-			}
+			delete(p.endpointCooldowns, endpoint.Name)
+			available = append(available, endpoint)
+			logger.Debug("[COOLDOWN] Recovered endpoint returned to sorted request plan: %s %s cooldown_reason=%s",
+				endpoint.Name,
+				requestLogFields(obs, endpoint.Name, 0, 0, cooldown.Reason),
+				sanitizeLogField(cooldown.Reason),
+			)
 			continue
 		}
 		logger.Debug("[COOLDOWN] Skipping cooled endpoint for request plan: %s remaining=%s %s cooldown_reason=%s",
@@ -182,7 +176,7 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 		)
 	}
 
-	if len(available) == 0 && len(deprioritized) == 0 {
+	if len(available) == 0 {
 		if len(nonBlockedFallback) > 0 {
 			logger.Debug("[COOLDOWN] All non-blocked endpoints are cooled; using non-blocked endpoint list %s", requestLogFields(obs, "", 0, 0, "all_non_blocked_endpoints_cooled"))
 			return nonBlockedFallback
@@ -190,13 +184,12 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 		logger.Debug("[COOLDOWN] All enabled endpoints are cooled; using full endpoint list %s", requestLogFields(obs, "", 0, 0, "all_endpoints_cooled"))
 		return endpoints
 	}
-	available = append(available, deprioritized...)
 	return available
 }
 
 func (p *Proxy) recoveredEndpointPolicy() string {
 	if p == nil || p.config == nil {
-		return config.RecoveredEndpointPolicyDeprioritize
+		return config.RecoveredEndpointPolicyAutoReturn
 	}
 	return p.config.GetFailover().RecoveredEndpointPolicy
 }

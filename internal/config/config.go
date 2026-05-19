@@ -17,7 +17,7 @@ const (
 	AuthModeTokenPool      = "token_pool"
 	AuthModeCodexTokenPool = "codex_token_pool"
 
-	RecoveredEndpointPolicyDeprioritize = "deprioritize"
+	RecoveredEndpointPolicyDeprioritize = "deprioritize" // Legacy value normalized to auto_return.
 	RecoveredEndpointPolicyAutoReturn   = "auto_return"
 
 	RoutingStrategyAuto   = "auto"
@@ -320,42 +320,60 @@ type FailoverConfig struct {
 	HealthCheckIntervalSec  int                     `json:"healthCheckIntervalSec,omitempty"` // Health check polling interval in seconds (default 60)
 }
 
+const (
+	UnifiedModelEndpointScopeAllEnabled = "all_enabled"
+	defaultUnifiedModelName             = "gpt-5.5"
+)
+
+// UnifiedModelConfig exposes a stable model name to downstream clients while
+// routing to the existing enabled endpoints in their current sort order.
+type UnifiedModelConfig struct {
+	Enabled                          bool     `json:"enabled"`
+	Name                             string   `json:"name"`
+	Aliases                          []string `json:"aliases,omitempty"`
+	AdvertiseOnlyUnifiedModel        bool     `json:"advertiseOnlyUnifiedModel"`
+	EndpointScope                    string   `json:"endpointScope"`
+	HotStandby                       bool     `json:"hotStandby"`
+	PreserveExplicitEndpointOverride bool     `json:"preserveExplicitEndpointOverride"`
+}
+
 // Config represents the application configuration
 type Config struct {
-	Port                      int             `json:"port"`
-	PortLocked                bool            `json:"-"` // CLI forced port, cannot be changed via API
-	BasicAuthEnabled          bool            `json:"basicAuthEnabled"`
-	BasicAuthUsername         string          `json:"basicAuthUsername"`
-	BasicAuthPassword         string          `json:"basicAuthPassword"`
-	Endpoints                 []Endpoint      `json:"endpoints"`
-	LogLevel                  int             `json:"logLevel"`                            // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
-	Language                  string          `json:"language"`                            // UI language: en, zh-CN
-	Theme                     string          `json:"theme"`                               // UI theme: light, dark
-	ThemeAuto                 bool            `json:"themeAuto"`                           // Auto switch theme based on time
-	AutoLightTheme            string          `json:"autoLightTheme,omitempty"`            // Theme to use in daytime when auto mode is on
-	AutoDarkTheme             string          `json:"autoDarkTheme,omitempty"`             // Theme to use in nighttime when auto mode is on
-	WindowWidth               int             `json:"windowWidth"`                         // Window width in pixels
-	WindowHeight              int             `json:"windowHeight"`                        // Window height in pixels
-	CloseWindowBehavior       string          `json:"closeWindowBehavior,omitempty"`       // "quit", "minimize", "ask"
-	ClaudeNotificationEnabled bool            `json:"claudeNotificationEnabled"`           // Enable Claude Code task completion notification
-	ClaudeNotificationType    string          `json:"claudeNotificationType"`              // Notification type: toast, dialog, disabled
-	ModelsCacheTTL            int             `json:"modelsCacheTTL,omitempty"`            // /v1/models cache TTL in minutes, default 30
-	ModelsCacheRefreshEnabled bool            `json:"modelsCacheRefreshEnabled,omitempty"` // Enable ?refresh=true parameter, default false
-	RoutingStrategy           string          `json:"routingStrategy,omitempty"`           // auto, claude, codex
-	WebDAV                    *WebDAVConfig   `json:"webdav,omitempty"`                    // WebDAV synchronization config
-	Backup                    *BackupConfig   `json:"backup,omitempty"`                    // Backup/sync configuration
-	Update                    *UpdateConfig   `json:"update,omitempty"`                    // Update configuration
-	Terminal                  *TerminalConfig `json:"terminal,omitempty"`                  // Terminal launcher config
-	Proxy                     *ProxyConfig    `json:"proxy,omitempty"`                     // HTTP proxy config
-	CodexProxy                *ProxyConfig    `json:"codexProxy,omitempty"`                // Codex dedicated proxy config
-	Failover                  *FailoverConfig `json:"failover,omitempty"`                  // Request fallback and endpoint cooldown config
+	Port                      int                 `json:"port"`
+	PortLocked                bool                `json:"-"` // CLI forced port, cannot be changed via API
+	BasicAuthEnabled          bool                `json:"basicAuthEnabled"`
+	BasicAuthUsername         string              `json:"basicAuthUsername"`
+	BasicAuthPassword         string              `json:"basicAuthPassword"`
+	Endpoints                 []Endpoint          `json:"endpoints"`
+	LogLevel                  int                 `json:"logLevel"`                            // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+	Language                  string              `json:"language"`                            // UI language: en, zh-CN
+	Theme                     string              `json:"theme"`                               // UI theme: light, dark
+	ThemeAuto                 bool                `json:"themeAuto"`                           // Auto switch theme based on time
+	AutoLightTheme            string              `json:"autoLightTheme,omitempty"`            // Theme to use in daytime when auto mode is on
+	AutoDarkTheme             string              `json:"autoDarkTheme,omitempty"`             // Theme to use in nighttime when auto mode is on
+	WindowWidth               int                 `json:"windowWidth"`                         // Window width in pixels
+	WindowHeight              int                 `json:"windowHeight"`                        // Window height in pixels
+	CloseWindowBehavior       string              `json:"closeWindowBehavior,omitempty"`       // "quit", "minimize", "ask"
+	ClaudeNotificationEnabled bool                `json:"claudeNotificationEnabled"`           // Enable Claude Code task completion notification
+	ClaudeNotificationType    string              `json:"claudeNotificationType"`              // Notification type: toast, dialog, disabled
+	ModelsCacheTTL            int                 `json:"modelsCacheTTL,omitempty"`            // /v1/models cache TTL in minutes, default 30
+	ModelsCacheRefreshEnabled bool                `json:"modelsCacheRefreshEnabled,omitempty"` // Enable ?refresh=true parameter, default false
+	RoutingStrategy           string              `json:"routingStrategy,omitempty"`           // auto, claude, codex
+	WebDAV                    *WebDAVConfig       `json:"webdav,omitempty"`                    // WebDAV synchronization config
+	Backup                    *BackupConfig       `json:"backup,omitempty"`                    // Backup/sync configuration
+	Update                    *UpdateConfig       `json:"update,omitempty"`                    // Update configuration
+	Terminal                  *TerminalConfig     `json:"terminal,omitempty"`                  // Terminal launcher config
+	Proxy                     *ProxyConfig        `json:"proxy,omitempty"`                     // HTTP proxy config
+	CodexProxy                *ProxyConfig        `json:"codexProxy,omitempty"`                // Codex dedicated proxy config
+	Failover                  *FailoverConfig     `json:"failover,omitempty"`                  // Request fallback and endpoint cooldown config
+	UnifiedModel              *UnifiedModelConfig `json:"unifiedModel,omitempty"`              // Stable downstream model routed across enabled endpoints
 	mu                        sync.RWMutex
 }
 
 // DefaultFailoverConfig returns the default request fallback behavior.
 func DefaultFailoverConfig() *FailoverConfig {
 	return &FailoverConfig{
-		RecoveredEndpointPolicy: RecoveredEndpointPolicyDeprioritize,
+		RecoveredEndpointPolicy: RecoveredEndpointPolicyAutoReturn,
 		Cooldowns: &FailoverCooldownConfig{
 			QuotaExhaustedSec:   3600,
 			RateLimitedSec:      120,
@@ -366,6 +384,83 @@ func DefaultFailoverConfig() *FailoverConfig {
 		},
 		HealthCheckIntervalSec: 60,
 	}
+}
+
+// DefaultUnifiedModelConfig returns the default unified model behavior. It is
+// disabled by default so existing routing behavior is unchanged unless enabled.
+func DefaultUnifiedModelConfig() *UnifiedModelConfig {
+	return &UnifiedModelConfig{
+		Enabled:                          false,
+		Name:                             defaultUnifiedModelName,
+		Aliases:                          []string{},
+		AdvertiseOnlyUnifiedModel:        true,
+		EndpointScope:                    UnifiedModelEndpointScopeAllEnabled,
+		HotStandby:                       true,
+		PreserveExplicitEndpointOverride: true,
+	}
+}
+
+// NormalizeUnifiedModelConfig returns a sanitized copy with defaults filled in.
+func NormalizeUnifiedModelConfig(unified *UnifiedModelConfig) *UnifiedModelConfig {
+	defaults := DefaultUnifiedModelConfig()
+	if unified == nil {
+		return defaults
+	}
+
+	normalized := &UnifiedModelConfig{
+		Enabled:                          unified.Enabled,
+		Name:                             strings.TrimSpace(unified.Name),
+		AdvertiseOnlyUnifiedModel:        unified.AdvertiseOnlyUnifiedModel,
+		EndpointScope:                    strings.TrimSpace(unified.EndpointScope),
+		HotStandby:                       unified.HotStandby,
+		PreserveExplicitEndpointOverride: unified.PreserveExplicitEndpointOverride,
+	}
+	if normalized.Name == "" {
+		normalized.Name = defaults.Name
+	}
+	if normalized.EndpointScope == "" || normalized.EndpointScope != UnifiedModelEndpointScopeAllEnabled {
+		normalized.EndpointScope = defaults.EndpointScope
+	}
+	normalized.Aliases = normalizeUnifiedModelAliases(normalized.Name, unified.Aliases)
+	return normalized
+}
+
+func normalizeUnifiedModelAliases(name string, aliases []string) []string {
+	seen := map[string]struct{}{strings.ToLower(strings.TrimSpace(name)): {}}
+	normalized := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		key := strings.ToLower(alias)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, alias)
+	}
+	return normalized
+}
+
+func UnifiedModelMatches(unified *UnifiedModelConfig, model string) bool {
+	unified = NormalizeUnifiedModelConfig(unified)
+	if !unified.Enabled {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	if strings.EqualFold(model, unified.Name) {
+		return true
+	}
+	for _, alias := range unified.Aliases {
+		if strings.EqualFold(model, alias) {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeFailoverConfig returns a sanitized copy with defaults filled in.
@@ -383,6 +478,9 @@ func NormalizeFailoverConfig(failover *FailoverConfig) *FailoverConfig {
 	if normalized.RecoveredEndpointPolicy != RecoveredEndpointPolicyAutoReturn &&
 		normalized.RecoveredEndpointPolicy != RecoveredEndpointPolicyDeprioritize {
 		normalized.RecoveredEndpointPolicy = defaults.RecoveredEndpointPolicy
+	}
+	if normalized.RecoveredEndpointPolicy == RecoveredEndpointPolicyDeprioritize {
+		normalized.RecoveredEndpointPolicy = RecoveredEndpointPolicyAutoReturn
 	}
 
 	*normalized.Cooldowns = *defaults.Cooldowns
@@ -433,7 +531,8 @@ func DefaultConfig() *Config {
 			AutoCheck:     true,
 			CheckInterval: 24,
 		},
-		Failover: DefaultFailoverConfig(),
+		Failover:     DefaultFailoverConfig(),
+		UnifiedModel: DefaultUnifiedModelConfig(),
 	}
 }
 
@@ -477,6 +576,7 @@ func (c *Config) ReplaceFrom(src *Config) {
 	c.Proxy = snapshot.Proxy
 	c.CodexProxy = snapshot.CodexProxy
 	c.Failover = snapshot.Failover
+	c.UnifiedModel = snapshot.UnifiedModel
 }
 
 type configSnapshot struct {
@@ -507,6 +607,7 @@ type configSnapshot struct {
 	Proxy                     *ProxyConfig
 	CodexProxy                *ProxyConfig
 	Failover                  *FailoverConfig
+	UnifiedModel              *UnifiedModelConfig
 }
 
 func (c *Config) snapshot() configSnapshot {
@@ -541,6 +642,7 @@ func (c *Config) snapshot() configSnapshot {
 		Proxy:                     cloneProxyConfig(c.Proxy),
 		CodexProxy:                cloneProxyConfig(c.CodexProxy),
 		Failover:                  NormalizeFailoverConfig(c.Failover),
+		UnifiedModel:              NormalizeUnifiedModelConfig(c.UnifiedModel),
 	}
 }
 
@@ -604,6 +706,17 @@ func cloneProxyConfig(src *ProxyConfig) *ProxyConfig {
 	return &dst
 }
 
+func cloneUnifiedModelConfig(src *UnifiedModelConfig) *UnifiedModelConfig {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	if src.Aliases != nil {
+		dst.Aliases = append([]string(nil), src.Aliases...)
+	}
+	return &dst
+}
+
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	c.mu.Lock()
@@ -642,6 +755,7 @@ func (c *Config) Validate() error {
 	}
 
 	c.Failover = NormalizeFailoverConfig(c.Failover)
+	c.UnifiedModel = NormalizeUnifiedModelConfig(c.UnifiedModel)
 
 	return nil
 }
@@ -965,6 +1079,20 @@ func (c *Config) UpdateFailover(failover *FailoverConfig) {
 	c.Failover = NormalizeFailoverConfig(failover)
 }
 
+// GetUnifiedModel returns the unified model configuration (thread-safe).
+func (c *Config) GetUnifiedModel() *UnifiedModelConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return NormalizeUnifiedModelConfig(c.UnifiedModel)
+}
+
+// UpdateUnifiedModel updates the unified model configuration (thread-safe).
+func (c *Config) UpdateUnifiedModel(unified *UnifiedModelConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.UnifiedModel = NormalizeUnifiedModelConfig(unified)
+}
+
 // GetClaudeNotification returns the Claude notification settings (thread-safe)
 func (c *Config) GetClaudeNotification() (enabled bool, notifType string) {
 	c.mu.RLock()
@@ -1279,6 +1407,33 @@ func LoadFromStorage(storage StorageAdapter) (*Config, error) {
 	})
 	config.Failover = NormalizeFailoverConfig(config.Failover)
 
+	config.UnifiedModel = DefaultUnifiedModelConfig()
+	if enabledStr, err := storage.GetConfig("unifiedModel_enabled"); err == nil && enabledStr != "" {
+		config.UnifiedModel.Enabled = enabledStr == "true"
+	}
+	if name, err := storage.GetConfig("unifiedModel_name"); err == nil && name != "" {
+		config.UnifiedModel.Name = name
+	}
+	if aliasesJSON, err := storage.GetConfig("unifiedModel_aliases"); err == nil && aliasesJSON != "" {
+		var aliases []string
+		if err := json.Unmarshal([]byte(aliasesJSON), &aliases); err == nil {
+			config.UnifiedModel.Aliases = aliases
+		}
+	}
+	if advertiseStr, err := storage.GetConfig("unifiedModel_advertiseOnlyUnifiedModel"); err == nil && advertiseStr != "" {
+		config.UnifiedModel.AdvertiseOnlyUnifiedModel = advertiseStr == "true"
+	}
+	if scope, err := storage.GetConfig("unifiedModel_endpointScope"); err == nil && scope != "" {
+		config.UnifiedModel.EndpointScope = scope
+	}
+	if hotStandbyStr, err := storage.GetConfig("unifiedModel_hotStandby"); err == nil && hotStandbyStr != "" {
+		config.UnifiedModel.HotStandby = hotStandbyStr == "true"
+	}
+	if preserveStr, err := storage.GetConfig("unifiedModel_preserveExplicitEndpointOverride"); err == nil && preserveStr != "" {
+		config.UnifiedModel.PreserveExplicitEndpointOverride = preserveStr == "true"
+	}
+	config.UnifiedModel = NormalizeUnifiedModelConfig(config.UnifiedModel)
+
 	// Load Claude notification config
 	if enabledStr, err := storage.GetConfig("claude_notification_enabled"); err == nil && enabledStr != "" {
 		config.ClaudeNotificationEnabled = enabledStr == "true"
@@ -1559,6 +1714,34 @@ func (c *Config) SaveToStorage(storage StorageAdapter) error {
 	}
 	if err := storage.SetConfig("failover_cooldown_configErrorSec", strconv.Itoa(failover.Cooldowns.ConfigErrorSec)); err != nil {
 		return fmt.Errorf("failed to save failover_cooldown_configErrorSec config: %w", err)
+	}
+
+	// Save Unified Model config
+	unified := NormalizeUnifiedModelConfig(c.UnifiedModel)
+	if err := storage.SetConfig("unifiedModel_enabled", strconv.FormatBool(unified.Enabled)); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_enabled config: %w", err)
+	}
+	if err := storage.SetConfig("unifiedModel_name", unified.Name); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_name config: %w", err)
+	}
+	aliasesJSON, err := json.Marshal(unified.Aliases)
+	if err != nil {
+		return fmt.Errorf("failed to marshal unifiedModel_aliases config: %w", err)
+	}
+	if err := storage.SetConfig("unifiedModel_aliases", string(aliasesJSON)); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_aliases config: %w", err)
+	}
+	if err := storage.SetConfig("unifiedModel_advertiseOnlyUnifiedModel", strconv.FormatBool(unified.AdvertiseOnlyUnifiedModel)); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_advertiseOnlyUnifiedModel config: %w", err)
+	}
+	if err := storage.SetConfig("unifiedModel_endpointScope", unified.EndpointScope); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_endpointScope config: %w", err)
+	}
+	if err := storage.SetConfig("unifiedModel_hotStandby", strconv.FormatBool(unified.HotStandby)); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_hotStandby config: %w", err)
+	}
+	if err := storage.SetConfig("unifiedModel_preserveExplicitEndpointOverride", strconv.FormatBool(unified.PreserveExplicitEndpointOverride)); err != nil {
+		return fmt.Errorf("failed to save unifiedModel_preserveExplicitEndpointOverride config: %w", err)
 	}
 
 	// Save Claude notification config

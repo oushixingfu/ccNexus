@@ -34,7 +34,7 @@ func TestHandleStreamingAsNonStreamingAggregatesOpenAIChatChunks(t *testing.T) {
 	rec := httptest.NewRecorder()
 	p := &Proxy{}
 
-	in, out, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI"}, &passthroughResponseTransformer{}, 0)
+	in, out, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI"}, &passthroughResponseTransformer{}, 0, "")
 	if err != nil {
 		t.Fatalf("handleStreamingAsNonStreaming failed: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestHandleStreamingAsNonStreamingBackfillsResponsesOutputFromDelta(t *testi
 	rec := httptest.NewRecorder()
 	p := &Proxy{}
 
-	in, out, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI2"}, &passthroughResponseTransformer{}, 0)
+	in, out, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI2"}, &passthroughResponseTransformer{}, 0, "")
 	if err != nil {
 		t.Fatalf("handleStreamingAsNonStreaming failed: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestHandleStreamingAsNonStreamingBackfillsResponsesFunctionCall(t *testing.
 	p := &Proxy{}
 	trans := cc.NewOpenAI2TransformerWithAPIURL("gpt-5.5", "", "https://example.com")
 
-	in, out, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI2"}, trans, 0)
+	in, out, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI2"}, trans, 0, "")
 	if err != nil {
 		t.Fatalf("handleStreamingAsNonStreaming failed: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestHandleStreamingAsNonStreamingSynthesizesResponsesPayloadFromDeltaWithou
 	rec := httptest.NewRecorder()
 	p := &Proxy{}
 
-	_, _, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI2"}, &passthroughResponseTransformer{}, 0)
+	_, _, text, err := p.handleStreamingAsNonStreaming(rec, resp, config.Endpoint{Name: "OpenAI2"}, &passthroughResponseTransformer{}, 0, "")
 	if err != nil {
 		t.Fatalf("handleStreamingAsNonStreaming failed: %v", err)
 	}

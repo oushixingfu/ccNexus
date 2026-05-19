@@ -133,3 +133,29 @@ func TestLoadModelsReturnsOnlyVerifiedEndpointModels(t *testing.T) {
 		t.Fatalf("unexpected verified model response: %#v", models[0])
 	}
 }
+
+func TestLoadModelsReturnsUnifiedModelWhenAdvertised(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{Name: "A", APIUrl: "https://a.example.com", APIKey: "test-key", AuthMode: config.AuthModeAPIKey, Enabled: true, Transformer: "openai2", Model: "real-a"},
+		{Name: "B", APIUrl: "https://b.example.com", APIKey: "test-key", AuthMode: config.AuthModeAPIKey, Enabled: true, Transformer: "openai2", Model: "real-b"},
+	})
+	cfg.UpdateUnifiedModel(&config.UnifiedModelConfig{
+		Enabled:                          true,
+		Name:                             "gpt-5.5",
+		AdvertiseOnlyUnifiedModel:        true,
+		EndpointScope:                    config.UnifiedModelEndpointScopeAllEnabled,
+		HotStandby:                       true,
+		PreserveExplicitEndpointOverride: true,
+	})
+	p := &Proxy{config: cfg, modelsCache: NewModelsCache(30)}
+
+	models := p.loadModelsForResponse(true)
+
+	if len(models) != 1 {
+		t.Fatalf("expected one unified model, got %#v", models)
+	}
+	if models[0].ID != "gpt-5.5" || models[0].EndpointID != "unified" {
+		t.Fatalf("unexpected unified model response: %#v", models[0])
+	}
+}

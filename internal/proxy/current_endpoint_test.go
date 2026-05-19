@@ -126,7 +126,7 @@ func TestConfigIdentityChangeClearsOnlyChangedEndpointCooldown(t *testing.T) {
 	}
 }
 
-func TestRequestPlanStartsAtCurrentEndpointAfterFilteringEarlierCooldown(t *testing.T) {
+func TestRequestPlanStartsAtFirstSortedAvailableEndpoint(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
@@ -135,19 +135,21 @@ func TestRequestPlanStartsAtCurrentEndpointAfterFilteringEarlierCooldown(t *test
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints(endpoints)
 	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
-	if err := p.SetCurrentEndpoint("B"); err != nil {
+	if err := p.SetCurrentEndpoint("C"); err != nil {
 		t.Fatalf("set current endpoint: %v", err)
 	}
-	p.markEndpointCooldown("A", "quota_exhausted", 10*time.Minute, requestObservability{RequestID: "req-plan"}, 1)
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan"})
-	plan := newRequestEndpointPlanForCurrent(available, endpoints, p.GetCurrentEndpointName())
-	if got := plan.Current().Name; got != "B" {
-		t.Fatalf("expected request plan to start at current endpoint B after filtering A, got %q", got)
+	plan := newRequestEndpointPlan(available, 0)
+	if got := plan.Current().Name; got != "A" {
+		t.Fatalf("expected request plan to start at first sorted endpoint A, got %q", got)
+	}
+	if got := plan.Advance().Name; got != "B" {
+		t.Fatalf("expected sorted failover from A to B, got %q", got)
 	}
 }
 
-func TestRequestPlanStartsAtNextEndpointWhenCurrentIsCooled(t *testing.T) {
+func TestRequestPlanStartsAtFirstSortedAvailableEndpointWhenPreferredIsCooled(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
@@ -156,16 +158,22 @@ func TestRequestPlanStartsAtNextEndpointWhenCurrentIsCooled(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints(endpoints)
 	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+	if err := p.SetCurrentEndpoint("C"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
 	p.markEndpointCooldown("A", "quota_exhausted", 10*time.Minute, requestObservability{RequestID: "req-plan-current-cooled"}, 1)
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-current-cooled"})
-	plan := newRequestEndpointPlanForCurrent(available, endpoints, p.GetCurrentEndpointName())
+	plan := newRequestEndpointPlan(available, 0)
 	if got := plan.Current().Name; got != "B" {
-		t.Fatalf("expected request plan to start at next available endpoint B when current A is cooled, got %q", got)
+		t.Fatalf("expected request plan to start at first available sorted endpoint B when A is cooled, got %q", got)
+	}
+	if got := plan.Advance().Name; got != "C" {
+		t.Fatalf("expected sorted failover from B to C, got %q", got)
 	}
 }
 
-func TestRequestPlanDeprioritizesRecoveredCurrentEndpoint(t *testing.T) {
+func TestRequestPlanReturnsRecoveredSortedEndpointToFront(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
@@ -174,32 +182,32 @@ func TestRequestPlanDeprioritizesRecoveredCurrentEndpoint(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints(endpoints)
 	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+	if err := p.SetCurrentEndpoint("C"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
 
 	p.cooldownMu.Lock()
 	p.endpointCooldowns["A"] = endpointCooldown{Reason: "quota_exhausted", Until: time.Now().Add(-time.Second)}
 	p.cooldownMu.Unlock()
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-recovered"})
-	plan := newRequestEndpointPlanForCurrentWithSkip(available, endpoints, p.GetCurrentEndpointName(), p.isEndpointDeprioritized(p.GetCurrentEndpointName()))
-	if got := plan.Current().Name; got != "B" {
-		t.Fatalf("expected recovered current endpoint to be deprioritized behind B, got %q", got)
+	plan := newRequestEndpointPlan(available, 0)
+	if got := plan.Current().Name; got != "A" {
+		t.Fatalf("expected recovered first sorted endpoint A to return to front, got %q", got)
 	}
-	if got := plan.Advance().Name; got != "C" {
-		t.Fatalf("expected C after B, got %q", got)
-	}
-	if got := plan.Advance().Name; got != "A" {
-		t.Fatalf("expected recovered A to remain as final fallback, got %q", got)
+	if got := plan.Advance().Name; got != "B" {
+		t.Fatalf("expected sorted failover from A to B, got %q", got)
 	}
 }
 
-func TestRequestPlanAutoReturnsRecoveredCurrentEndpoint(t *testing.T) {
+func TestRequestPlanTreatsLegacyDeprioritizeAsSortedRecovery(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
 	}
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints(endpoints)
-	cfg.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+	cfg.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyDeprioritize})
 	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
 
 	p.cooldownMu.Lock()
@@ -207,9 +215,9 @@ func TestRequestPlanAutoReturnsRecoveredCurrentEndpoint(t *testing.T) {
 	p.cooldownMu.Unlock()
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-auto-return"})
-	plan := newRequestEndpointPlanForCurrentWithSkip(available, endpoints, p.GetCurrentEndpointName(), p.isEndpointDeprioritized(p.GetCurrentEndpointName()))
+	plan := newRequestEndpointPlan(available, 0)
 	if got := plan.Current().Name; got != "A" {
-		t.Fatalf("expected auto_return policy to start on recovered current A, got %q", got)
+		t.Fatalf("expected legacy deprioritize policy not to keep recovered A behind B, got %q", got)
 	}
 	p.cooldownMu.RLock()
 	_, stillCooled := p.endpointCooldowns["A"]
@@ -236,7 +244,7 @@ func TestRequestPlanSkipsRuntimeBlockedQuotaEndpoint(t *testing.T) {
 	p.cooldownMu.Unlock()
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-runtime-blocked"})
-	plan := newRequestEndpointPlanForCurrentWithSkip(available, endpoints, p.GetCurrentEndpointName(), p.isEndpointDeprioritized(p.GetCurrentEndpointName()))
+	plan := newRequestEndpointPlan(available, 0)
 	if got := plan.Current().Name; got != "B" {
 		t.Fatalf("expected runtime-blocked quota endpoint A to be skipped, got %q", got)
 	}

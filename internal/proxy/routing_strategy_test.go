@@ -263,7 +263,7 @@ func TestApplyRoutingStrategyDoesNotTreatOpenAIChatAsCodexCapableOnlyByModel(t *
 	assertEndpointOrder(t, routed, []string{"codex", "claude", "openai-chat"})
 }
 
-func TestApplyRoutingStrategyKeepsRecoveredDeprioritizedEndpointsLast(t *testing.T) {
+func TestApplyRoutingStrategyReturnsRecoveredPriorityEndpointToSortedClass(t *testing.T) {
 	endpoints := []config.Endpoint{
 		routingTestEndpoint("recovered-codex", "openai2", "gpt-5.5"),
 		routingTestEndpoint("other", "openai", "llama-3.3"),
@@ -278,7 +278,7 @@ func TestApplyRoutingStrategyKeepsRecoveredDeprioritizedEndpointsLast(t *testing
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "routing-recovered"})
 	routed := p.applyRoutingStrategyToRequestPlan(available, routingPreferenceCodex)
-	assertEndpointOrder(t, routed, []string{"codex", "other", "recovered-codex"})
+	assertEndpointOrder(t, routed, []string{"recovered-codex", "codex", "other"})
 }
 
 func TestRoutingStrategyStartsAtPreferredEndpointWhenCurrentDoesNotMatch(t *testing.T) {

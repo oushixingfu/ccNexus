@@ -354,6 +354,10 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) loadModelsForResponse(refresh bool) []ModelInfo {
+	if models, ok := p.unifiedModelsForResponse(); ok {
+		return models
+	}
+
 	if !refresh {
 		if cached, ok := p.modelsCache.Get(); ok {
 			return cached
@@ -387,6 +391,26 @@ func (p *Proxy) loadModelsForResponse(refresh bool) []ModelInfo {
 	p.modelsCache.Set(allModels)
 
 	return allModels
+}
+
+func (p *Proxy) unifiedModelsForResponse() ([]ModelInfo, bool) {
+	unified := p.unifiedModelConfig()
+	if !unified.Enabled || !unified.AdvertiseOnlyUnifiedModel {
+		return nil, false
+	}
+	modelName := strings.TrimSpace(unified.Name)
+	if modelName == "" {
+		return nil, false
+	}
+	return []ModelInfo{
+		{
+			ID:         modelName,
+			Object:     "model",
+			Created:    time.Now().Unix(),
+			OwnedBy:    "ccnexus",
+			EndpointID: "unified",
+		},
+	}, true
 }
 
 // writeModelsResponse writes the models list response

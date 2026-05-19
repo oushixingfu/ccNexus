@@ -186,6 +186,14 @@ func (p *Proxy) recordEndpointFailure(endpointName, reason string, statusCodes .
 	return status
 }
 
+func (p *Proxy) recordRetryableRequestFailure(endpointName, reason string, statusCodes ...int) *storage.EndpointRuntimeStatus {
+	status := p.recordEndpointFailure(endpointName, reason, statusCodes...)
+	if shouldDeferHealthCheckForCooldownReason(reason) {
+		p.registerForHealthCheck(endpointName)
+	}
+	return status
+}
+
 func (p *Proxy) recordEndpointError(endpointName, reason string, statusCodes ...int) {
 	status := p.recordEndpointFailure(endpointName, reason, statusCodes...)
 	p.emitEndpointRuntimeEvent(endpointName, "failure", status)

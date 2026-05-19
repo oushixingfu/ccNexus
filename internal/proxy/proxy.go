@@ -57,6 +57,10 @@ type Proxy struct {
 	cooldownMu               sync.RWMutex                // protects endpointCooldowns
 	runtimeBlockedEndpoints  map[string]string           // hard request-plan skips for failures that lightweight probes cannot clear
 	runtimeBlockedMu         sync.RWMutex                // protects runtimeBlockedEndpoints
+	protocolCooldowns        map[string]time.Time        // endpoint+client-format skips after protocol incompatibility
+	protocolCooldownMu       sync.RWMutex                // protects protocolCooldowns
+	protocolFallbackCache    map[string]string           // endpoint+client-format learned upstream protocol fallback
+	protocolFallbackCacheMu  sync.RWMutex                // protects protocolFallbackCache
 	modelRegistry            *modelRegistry              // verified endpoint-model index for request routing
 	modelVerifier            *modelVerifier              // background verifier for endpoint model support
 	streamHeaderTimeout      time.Duration               // injectable response-header timeout for upstream streaming requests
@@ -105,6 +109,8 @@ func New(cfg *config.Config, statsStorage StatsStorage, sqliteStorage *storage.S
 		retrySleep:              time.Sleep,
 		endpointCooldowns:       make(map[string]endpointCooldown),
 		runtimeBlockedEndpoints: make(map[string]string),
+		protocolCooldowns:       make(map[string]time.Time),
+		protocolFallbackCache:   make(map[string]string),
 		healthCheckWatched:      make(map[string]struct{}),
 		healthCheckWake:         make(chan struct{}, 1),
 	}
@@ -545,6 +551,16 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		logger.Debug("[Resolver] 使用指定端点: %s", specifiedEndpoint.Name)
 	}
 
+	unifiedModel, unifiedModelActive := p.unifiedModelForRequest(streamReq.Model)
+	if unifiedModelActive && useSpecificEndpoint && unifiedModel.PreserveExplicitEndpointOverride {
+		unifiedModelActive = false
+	}
+	unifiedDisplayModel := ""
+	if unifiedModelActive {
+		unifiedDisplayModel = strings.TrimSpace(unifiedModel.Name)
+		logger.Debug("[UnifiedModel] Using unified model route: downstream_model=%s endpoint_scope=%s", unifiedDisplayModel, unifiedModel.EndpointScope)
+	}
+
 	clientModelForRouting := strings.TrimSpace(streamReq.Model)
 	if requestedModelSuffix != "" {
 		clientModelForRouting = strings.TrimSpace(requestedModelSuffix)
@@ -554,6 +570,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	modelCandidatesByEndpoint := map[string]storage.EndpointModel{}
 	modelRoutingActive := false
+	if unifiedModelActive {
+		clientModelForRouting = ""
+	}
 	if clientModelForRouting != "" && p.modelRegistry != nil {
 		candidates, err := p.modelRegistry.verifiedCandidates(clientModelForRouting)
 		if err != nil {
@@ -601,24 +620,20 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestEndpoints := endpoints
-	currentEndpointName := p.GetCurrentEndpointName()
-	planOrderEndpoints := endpoints
 	if !useSpecificEndpoint {
 		requestEndpoints = p.getRequestPlanEndpoints(endpoints, obs)
+		if unifiedModelActive {
+			requestEndpoints = p.filterProtocolCooledEndpoints(requestEndpoints, clientFormat, obs)
+		}
 		routingPreference := routingPreferenceNone
-		if !modelRoutingActive {
+		if !modelRoutingActive && !unifiedModelActive {
 			routingPreference = p.routingPreferenceForRequest(clientFormat, streamReq.Model)
 		}
 		if routingPreference != routingPreferenceNone {
 			requestEndpoints = p.applyRoutingStrategyToRequestPlan(requestEndpoints, routingPreference)
-			planOrderEndpoints = requestEndpoints
-			if currentEndpoint, ok := findEndpointByName(requestEndpoints, currentEndpointName); !ok || !endpointMatchesRoutingPreference(currentEndpoint, routingPreference) {
-				currentEndpointName = ""
-			}
 		}
 	}
-	skipCurrentEndpoint := !useSpecificEndpoint && p.isEndpointDeprioritized(currentEndpointName)
-	requestPlan := newRequestEndpointPlanForCurrentWithSkip(requestEndpoints, planOrderEndpoints, currentEndpointName, skipCurrentEndpoint)
+	requestPlan := newRequestEndpointPlan(requestEndpoints, 0)
 	maxRetries := p.computeMaxRetries(requestEndpoints)
 	semanticEmptyMaxRetries := len(requestEndpoints) * semanticEmptyFailoverAttempts
 	if useSpecificEndpoint {
@@ -744,6 +759,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		fallbackKey := protocolFallbackKey(endpoint.Name, clientFormat)
 		upstreamEndpoint := endpointForClientFormat(clientFormat, endpoint)
+		if unifiedModelActive {
+			upstreamEndpoint = unifiedEndpointForUpstream(upstreamEndpoint, unifiedModel)
+		}
 		if modelCandidate, ok := modelCandidatesByEndpoint[endpoint.Name]; ok {
 			upstreamEndpoint.Model = modelCandidate.ModelID
 			if strings.TrimSpace(modelCandidate.UpstreamTransformer) != "" {
@@ -751,8 +769,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		protocolFallbackApplied := false
-		if fallbackTransformer := protocolFallbackOverrides[fallbackKey]; fallbackTransformer != "" {
+		fallbackTransformer := protocolFallbackOverrides[fallbackKey]
+		if fallbackTransformer == "" {
+			fallbackTransformer = p.cachedProtocolFallbackTransformer(fallbackKey)
+		}
+		if fallbackTransformer != "" {
 			upstreamEndpoint = endpoint
+			if unifiedModelActive {
+				upstreamEndpoint = unifiedEndpointForUpstream(upstreamEndpoint, unifiedModel)
+			}
 			if modelCandidate, ok := modelCandidatesByEndpoint[endpoint.Name]; ok {
 				upstreamEndpoint.Model = modelCandidate.ModelID
 			}
@@ -871,7 +896,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			retryReason := retryReasonForRequestError(err)
 			logRequestAttemptError(obs, endpoint.Name, attemptNumber, 0, retryReason, "Request failed: %v", err)
 			if isRetryableRequestErrorReason(retryReason) {
-				status := p.recordEndpointFailure(endpoint.Name, retryReason)
+				status := p.recordRetryableRequestFailure(endpoint.Name, retryReason)
 				p.emitEndpointRuntimeEvent(endpoint.Name, "failure", status)
 				p.markRequestInactive(endpoint.Name)
 				if endpointAttempts >= endpointFastFailoverAttempts {
@@ -916,6 +941,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			if recordEndpointSuccess {
 				if protocolFallbackApplied {
 					p.rememberProtocolFallbackSuccess(endpoint, upstreamEndpoint.Transformer)
+					p.rememberProtocolFallbackOverride(fallbackKey, upstreamEndpoint.Transformer)
 				}
 				p.clearEndpointCooldown(endpoint.Name)
 				p.recordEndpointSuccessEvent(endpoint.Name)
@@ -925,7 +951,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		// Codex backend and force-stream endpoints may require stream=true upstream.
 		// Bridge to non-stream client responses regardless of upstream Content-Type quirks.
 		if resp.StatusCode == http.StatusOK && !streamReq.Stream && shouldAggregateStreamingAsNonStreaming(upstreamEndpoint, transformerName) {
-			inputTokens, outputTokens, outputText, err := p.handleStreamingAsNonStreaming(w, resp, endpoint, trans, credentialID)
+			inputTokens, outputTokens, outputText, err := p.handleStreamingAsNonStreaming(w, resp, endpoint, trans, credentialID, unifiedDisplayModel)
 			if err == nil {
 				// Fallback: estimate tokens when usage is missing.
 				if inputTokens == 0 || outputTokens == 0 {
@@ -984,7 +1010,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK && isStreaming {
-			streamResult := p.handleStreamingResponse(ctx, w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID, streamSession)
+			streamResult := p.handleStreamingResponse(ctx, w, resp, endpoint, trans, transformerName, thinkingEnabled, modelName, bodyBytes, credentialID, streamSession, unifiedDisplayModel)
 			inputTokens := streamResult.InputTokens
 			outputTokens := streamResult.OutputTokens
 			outputText := streamResult.OutputText
@@ -1084,7 +1110,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			inputTokens, outputTokens, err := p.handleNonStreamingResponse(w, resp, endpoint, trans)
+			inputTokens, outputTokens, err := p.handleNonStreamingResponse(w, resp, endpoint, trans, unifiedDisplayModel)
 			if err == nil {
 				recordClientSuccess(inputTokens, outputTokens, true)
 				totalElapsed := time.Since(requestStart).Round(time.Millisecond)
@@ -1214,7 +1240,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 			if isUpstreamInvalidRequestHTTPFailure(resp.StatusCode, errMsg) {
 				logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, resp.StatusCode, "upstream_invalid_request", "Upstream returned invalid request error, not retrying endpoint: %s", logMsg)
+				p.recordCredentialUsage(credentialID, endpoint.Name, 0, 1, 0, 0)
+				p.recordEndpointError(endpoint.Name, "upstream_invalid_request", resp.StatusCode)
 				p.markRequestInactive(endpoint.Name)
+				if unifiedModelActive && !useSpecificEndpoint && requestPlan.Len() > 1 {
+					p.markProtocolCooldown(endpoint.Name, clientFormat, "upstream_invalid_request")
+					p.advanceRequestEndpoint(requestPlan, endpoint, obs, attemptNumber, "upstream_invalid_request")
+					endpointAttempts = 0
+					continue
+				}
 				recordClientError(endpoint.Name)
 				if streamSession != nil && streamSession.Started() {
 					_ = writeDownstreamStreamFailure(streamSession, clientFormat, transformerName, "upstream_invalid_request", fmt.Sprintf("Upstream returned invalid request: %s", logMsg))

@@ -207,6 +207,50 @@ func TestProtocolFallbackResponsesUnsupportedParameterFallsBackToChat(t *testing
 	}
 }
 
+func TestHandleProxyCachesSuccessfulProtocolFallbackForSameClientFormat(t *testing.T) {
+	var responsesHits int
+	var chatHits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesHits++
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"invalid character 'e' looking for beginning of value","type":"bad_response_body","code":"bad_response_body"}}`))
+		case "/v1/chat/completions":
+			chatHits++
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"gpt-5.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
+		default:
+			t.Fatalf("unexpected upstream path %s", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	endpoint := failoverPolicyTestEndpoint("gateway", upstream.URL)
+	endpoint.Transformer = "openai2"
+	endpoint.Model = "gpt-5.5"
+	endpoint.AutoSelect = true
+	endpoint.SupportsOpenAIResponses = true
+	endpoint.SupportsOpenAIChat = true
+	p := newFailoverPolicyTestProxy([]config.Endpoint{endpoint}, upstream.Client())
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":false,"input":"hi"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		p.handleProxy(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: expected HTTP 200, got %d body=%q", i+1, rec.Code, rec.Body.String())
+		}
+	}
+
+	if responsesHits != 1 || chatHits != 2 {
+		t.Fatalf("expected second request to reuse cached chat fallback, got responses=%d chat=%d", responsesHits, chatHits)
+	}
+}
+
 func TestHandleProxyClaudeClientUsesResponsesForGPTGatewayWhenAvailable(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {

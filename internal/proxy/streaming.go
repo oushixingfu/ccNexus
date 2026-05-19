@@ -228,7 +228,7 @@ type streamResponseResult struct {
 }
 
 // handleStreamingResponse processes streaming SSE responses
-func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64, streamSession *downstreamStreamSession) streamResponseResult {
+func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, transformerName string, thinkingEnabled bool, modelName string, bodyBytes []byte, credentialID int64, streamSession *downstreamStreamSession, displayModel string) streamResponseResult {
 	result := streamResponseResult{}
 
 	flusher, ok := w.(http.Flusher)
@@ -326,6 +326,7 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 		if len(data) == 0 {
 			return nil
 		}
+		data = rewriteSSEModelFields(data, displayModel)
 		if !semanticDataSeen {
 			pendingWrites.Write(data)
 			if !semantic {
@@ -659,7 +660,7 @@ func (p *Proxy) handleStreamingResponse(ctx context.Context, w http.ResponseWrit
 
 // handleStreamingAsNonStreaming aggregates SSE and returns a single non-stream response.
 // This is used for Codex endpoints that require stream=true upstream while client requested non-stream.
-func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, credentialID int64) (int, int, string, error) {
+func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, credentialID int64, displayModel string) (int, int, string, error) {
 	var reader io.Reader = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzipReader, err := gzip.NewReader(resp.Body)
@@ -761,6 +762,7 @@ func (p *Proxy) handleStreamingAsNonStreaming(w http.ResponseWriter, resp *http.
 	if err != nil {
 		return 0, 0, "", err
 	}
+	transformedResp = rewriteJSONModelFields(transformedResp, displayModel)
 
 	inputTokens, outputTokens := extractTokenUsage(transformedResp)
 	transformedInputTokens, transformedOutputTokens := inputTokens, outputTokens

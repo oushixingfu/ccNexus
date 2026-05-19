@@ -117,7 +117,7 @@ func TestHandleNonStreamingResponseExtractsUsageFromSSEPayloadFallback(t *testin
 	rec := httptest.NewRecorder()
 	p := &Proxy{}
 
-	in, out, err := p.handleNonStreamingResponse(rec, resp, endpoint, &passthroughResponseTransformer{})
+	in, out, err := p.handleNonStreamingResponse(rec, resp, endpoint, &passthroughResponseTransformer{}, "")
 	if err != nil {
 		t.Fatalf("handleNonStreamingResponse failed: %v", err)
 	}

@@ -124,7 +124,7 @@ func TestBuildHealthCheckRequestKimiUsesSemanticProbeBudget(t *testing.T) {
 	}
 }
 
-func TestHealthCheckRecoveryDoesNotAutoSwitchWhenDeprioritize(t *testing.T) {
+func TestHealthCheckRecoverySwitchesBackBySortedPriority(t *testing.T) {
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()
 
@@ -132,6 +132,7 @@ func TestHealthCheckRecoveryDoesNotAutoSwitchWhenDeprioritize(t *testing.T) {
 		failoverPolicyTestEndpoint("A", recovered.URL),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
 	}, recovered.Client())
+	p.config.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyDeprioritize})
 	if err := p.SetCurrentEndpoint("B"); err != nil {
 		t.Fatalf("set current endpoint: %v", err)
 	}
@@ -139,14 +140,92 @@ func TestHealthCheckRecoveryDoesNotAutoSwitchWhenDeprioritize(t *testing.T) {
 	p.registerForHealthCheck("A")
 	p.runHealthCheckRound()
 
-	if got := p.GetCurrentEndpointName(); got != "B" {
-		t.Fatalf("expected deprioritize policy to keep current endpoint B, got %q", got)
+	if got := p.GetCurrentEndpointName(); got != "A" {
+		t.Fatalf("expected recovered first sorted endpoint A to replace current endpoint B, got %q", got)
 	}
 	p.healthCheckWatchedMu.RLock()
 	_, watched := p.healthCheckWatched["A"]
 	p.healthCheckWatchedMu.RUnlock()
 	if watched {
 		t.Fatal("expected recovered endpoint to be removed from health check watch set")
+	}
+}
+
+func TestRetryableRequestFailureIsHealthCheckedAndCleared(t *testing.T) {
+	recovered := newHealthyResponsesStreamServer(t)
+	defer recovered.Close()
+
+	store, err := storage.NewSQLiteStorage(filepath.Join(t.TempDir(), "ccnexus.db"))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	defer store.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", recovered.URL),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	})
+	p := New(cfg, &noopStatsStorage{}, store, "test-device")
+	p.httpClient = recovered.Client()
+
+	status := p.recordRetryableRequestFailure("A", "transient_network_error")
+	p.emitEndpointRuntimeEvent("A", "failure", status)
+
+	p.healthCheckWatchedMu.RLock()
+	_, watched := p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if !watched {
+		t.Fatal("expected retryable request failure to register endpoint for health check")
+	}
+
+	p.runHealthCheckRound()
+
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	recoveredStatus := statuses["A"]
+	if recoveredStatus == nil || recoveredStatus.LastSuccessAt == nil {
+		t.Fatalf("expected health check to record recovery success, got %#v", recoveredStatus)
+	}
+	if recoveredStatus.LastFailureReason != "" {
+		t.Fatalf("expected health check recovery to clear transient failure reason, got %q", recoveredStatus.LastFailureReason)
+	}
+	p.healthCheckWatchedMu.RLock()
+	_, watched = p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watched {
+		t.Fatal("expected recovered endpoint to be removed from health check watch set")
+	}
+}
+
+func TestUnifiedModelHotStandbyKeepsEnabledEndpointsWatched(t *testing.T) {
+	recovered := newHealthyResponsesStreamServer(t)
+	defer recovered.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", recovered.URL),
+		failoverPolicyTestEndpoint("B", recovered.URL),
+	}, recovered.Client())
+	p.config.UpdateUnifiedModel(&config.UnifiedModelConfig{
+		Enabled:                          true,
+		Name:                             "gpt-5.5",
+		AdvertiseOnlyUnifiedModel:        true,
+		EndpointScope:                    config.UnifiedModelEndpointScopeAllEnabled,
+		HotStandby:                       true,
+		PreserveExplicitEndpointOverride: true,
+	})
+
+	p.seedHealthCheckWatchSet()
+	p.runHealthCheckRound()
+
+	p.healthCheckWatchedMu.RLock()
+	_, watchedA := p.healthCheckWatched["A"]
+	_, watchedB := p.healthCheckWatched["B"]
+	p.healthCheckWatchedMu.RUnlock()
+	if !watchedA || !watchedB {
+		t.Fatalf("expected hot standby to keep all enabled endpoints watched, got A=%t B=%t", watchedA, watchedB)
 	}
 }
 

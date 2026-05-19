@@ -14,6 +14,41 @@ func protocolFallbackKey(endpointName string, clientFormat ClientFormat) string 
 	return strings.TrimSpace(endpointName) + "|" + string(clientFormat)
 }
 
+func (p *Proxy) cachedProtocolFallbackTransformer(key string) string {
+	if p == nil || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	p.protocolFallbackCacheMu.RLock()
+	defer p.protocolFallbackCacheMu.RUnlock()
+	return p.protocolFallbackCache[key]
+}
+
+func (p *Proxy) rememberProtocolFallbackOverride(key string, upstreamTransformer string) {
+	if p == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	normalized := providercompat.NormalizeTransformer(upstreamTransformer)
+	if normalized == "" || normalized == "auto" {
+		return
+	}
+
+	p.protocolFallbackCacheMu.Lock()
+	if p.protocolFallbackCache == nil {
+		p.protocolFallbackCache = make(map[string]string)
+	}
+	p.protocolFallbackCache[key] = normalized
+	p.protocolFallbackCacheMu.Unlock()
+}
+
+func (p *Proxy) clearProtocolFallbackCache() {
+	if p == nil {
+		return
+	}
+	p.protocolFallbackCacheMu.Lock()
+	p.protocolFallbackCache = make(map[string]string)
+	p.protocolFallbackCacheMu.Unlock()
+}
+
 func protocolFallbackTransformerForHTTPFailure(clientFormat ClientFormat, endpoint config.Endpoint, upstreamEndpoint config.Endpoint, transformerName string, statusCode int, body string) string {
 	if statusCode < 400 {
 		return ""

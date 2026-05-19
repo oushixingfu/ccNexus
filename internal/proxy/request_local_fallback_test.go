@@ -1196,6 +1196,52 @@ func TestTransientNetworkErrorSingleRetryCanRecoverOnSameEndpoint(t *testing.T) 
 	}
 }
 
+func TestRequestUsesFirstSortedAvailableEndpointEvenWhenCurrentIsLower(t *testing.T) {
+	var hitsA int
+	var hitsB int
+	var hitsC int
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Host {
+		case "a.example":
+			hitsA++
+		case "b.example":
+			hitsB++
+		case "c.example":
+			hitsC++
+		default:
+			t.Fatalf("unexpected upstream host %q", req.URL.Host)
+			return nil, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp-a","usage":{"input_tokens":1,"output_tokens":2},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+		failoverPolicyTestEndpoint("C", "https://c.example"),
+	}, client)
+	if err := p.SetCurrentEndpoint("C"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+
+	rec := issueFailoverPolicyTestRequest(p, "req-sorted-priority")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected sorted-priority request to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if hitsA != 1 || hitsB != 0 || hitsC != 0 {
+		t.Fatalf("expected only first sorted endpoint A to be used, got hits A=%d B=%d C=%d", hitsA, hitsB, hitsC)
+	}
+	if got := rec.Header().Get(headerCCNexusEndpoint); got != "A" {
+		t.Fatalf("expected response endpoint header A, got %q", got)
+	}
+}
+
 func TestRateLimitedRetryUsesBackoffBeforeSameEndpointRetry(t *testing.T) {
 	logger.GetLogger().Clear()
 	logger.GetLogger().SetMinLevel(logger.DEBUG)

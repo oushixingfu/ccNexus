@@ -83,8 +83,8 @@ func TestLoadFromStorageUsesDefaultFailover(t *testing.T) {
 	}
 
 	failover := cfg.GetFailover()
-	if failover.RecoveredEndpointPolicy != RecoveredEndpointPolicyDeprioritize {
-		t.Fatalf("expected default policy %q, got %q", RecoveredEndpointPolicyDeprioritize, failover.RecoveredEndpointPolicy)
+	if failover.RecoveredEndpointPolicy != RecoveredEndpointPolicyAutoReturn {
+		t.Fatalf("expected default policy %q, got %q", RecoveredEndpointPolicyAutoReturn, failover.RecoveredEndpointPolicy)
 	}
 	if failover.Cooldowns.QuotaExhaustedSec != 3600 ||
 		failover.Cooldowns.RateLimitedSec != 120 ||
@@ -166,11 +166,68 @@ func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 		},
 	})
 	failover = cfg.GetFailover()
-	if failover.RecoveredEndpointPolicy != RecoveredEndpointPolicyDeprioritize {
-		t.Fatalf("expected invalid policy to normalize to deprioritize, got %q", failover.RecoveredEndpointPolicy)
+	if failover.RecoveredEndpointPolicy != RecoveredEndpointPolicyAutoReturn {
+		t.Fatalf("expected invalid policy to normalize to auto_return, got %q", failover.RecoveredEndpointPolicy)
 	}
 	if failover.Cooldowns.QuotaExhaustedSec != 3600 {
 		t.Fatalf("expected negative cooldown to normalize to default, got %d", failover.Cooldowns.QuotaExhaustedSec)
+	}
+}
+
+func TestLegacyDeprioritizeFailoverPolicyNormalizesToAutoReturn(t *testing.T) {
+	store := newFakeConfigStorage()
+	store.configs["failover_recoveredEndpointPolicy"] = RecoveredEndpointPolicyDeprioritize
+
+	cfg, err := LoadFromStorage(store)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if got := cfg.GetFailover().RecoveredEndpointPolicy; got != RecoveredEndpointPolicyAutoReturn {
+		t.Fatalf("expected legacy deprioritize policy to normalize to auto_return, got %q", got)
+	}
+}
+
+func TestUnifiedModelConfigPersistsAndMatchesAliases(t *testing.T) {
+	store := newFakeConfigStorage()
+	cfg := DefaultConfig()
+	cfg.UpdateEndpoints(nil)
+	cfg.UpdateUnifiedModel(&UnifiedModelConfig{
+		Enabled:                          true,
+		Name:                             "gpt-auto",
+		Aliases:                          []string{"gpt-5.5", " GPT-5.5 ", "gpt-auto", ""},
+		AdvertiseOnlyUnifiedModel:        true,
+		EndpointScope:                    UnifiedModelEndpointScopeAllEnabled,
+		HotStandby:                       true,
+		PreserveExplicitEndpointOverride: true,
+	})
+
+	if err := cfg.SaveToStorage(store); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if got := store.configs["unifiedModel_enabled"]; got != "true" {
+		t.Fatalf("expected unified model enabled to persist true, got %q", got)
+	}
+	if got := store.configs["unifiedModel_name"]; got != "gpt-auto" {
+		t.Fatalf("expected unified model name to persist, got %q", got)
+	}
+
+	reloaded, err := LoadFromStorage(store)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	unified := reloaded.GetUnifiedModel()
+	if !unified.Enabled || unified.Name != "gpt-auto" {
+		t.Fatalf("unexpected unified model config: %#v", unified)
+	}
+	if len(unified.Aliases) != 1 || unified.Aliases[0] != "gpt-5.5" {
+		t.Fatalf("expected duplicate/self aliases to be normalized, got %#v", unified.Aliases)
+	}
+	if !UnifiedModelMatches(unified, "GPT-5.5") || !UnifiedModelMatches(unified, "gpt-auto") {
+		t.Fatalf("expected unified model name and aliases to match")
+	}
+	if UnifiedModelMatches(unified, "other-model") {
+		t.Fatalf("did not expect unrelated model to match")
 	}
 }
 
@@ -183,6 +240,7 @@ func TestReplaceFromUpdatesConfigWithoutCopyingLock(t *testing.T) {
 	next.UpdatePort(3022)
 	next.UpdateRoutingStrategy(RoutingStrategyClaude)
 	next.UpdateEndpoints([]Endpoint{{Name: "new", APIUrl: "https://new.example.com", APIKey: "sk-new", AuthMode: AuthModeAPIKey, Enabled: true, Transformer: "openai2", Model: "gpt-5.5"}})
+	next.UpdateUnifiedModel(&UnifiedModelConfig{Enabled: true, Name: "gpt-auto", AdvertiseOnlyUnifiedModel: true, EndpointScope: UnifiedModelEndpointScopeAllEnabled, HotStandby: true, PreserveExplicitEndpointOverride: true})
 
 	current.ReplaceFrom(next)
 
@@ -195,5 +253,8 @@ func TestReplaceFromUpdatesConfigWithoutCopyingLock(t *testing.T) {
 	endpoints := current.GetEndpoints()
 	if len(endpoints) != 1 || endpoints[0].Name != "new" || endpoints[0].Model != "gpt-5.5" {
 		t.Fatalf("expected replaced endpoints, got %#v", endpoints)
+	}
+	if unified := current.GetUnifiedModel(); !unified.Enabled || unified.Name != "gpt-auto" {
+		t.Fatalf("expected replaced unified model config, got %#v", unified)
 	}
 }

@@ -179,6 +179,8 @@ func (p *Proxy) UpdateConfigPreservingCurrentName(cfg *config.Config, currentEnd
 	}
 
 	p.clearEndpointCooldownsForConfigChange(oldEndpoints, newEndpointsSnapshot)
+	p.clearProtocolCooldowns()
+	p.clearProtocolFallbackCache()
 	p.configEndpointsSnapshot = cloneEndpoints(newEndpointsSnapshot)
 
 	// Clear models cache to force refresh with new endpoints

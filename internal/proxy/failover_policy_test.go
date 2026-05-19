@@ -556,6 +556,8 @@ func newFailoverPolicyTestProxy(endpoints []config.Endpoint, client *http.Client
 		retrySleep:              func(time.Duration) {},
 		endpointCooldowns:       make(map[string]endpointCooldown),
 		runtimeBlockedEndpoints: make(map[string]string),
+		protocolCooldowns:       make(map[string]time.Time),
+		protocolFallbackCache:   make(map[string]string),
 	}
 }
 

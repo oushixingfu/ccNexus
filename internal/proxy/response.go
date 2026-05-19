@@ -13,7 +13,7 @@ import (
 )
 
 // handleNonStreamingResponse processes non-streaming responses
-func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer) (int, int, error) {
+func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Response, endpoint config.Endpoint, trans transformer.Transformer, displayModel string) (int, int, error) {
 	var bodyBytes []byte
 	var err error
 
@@ -40,6 +40,7 @@ func (p *Proxy) handleNonStreamingResponse(w http.ResponseWriter, resp *http.Res
 		logger.Error("[%s] Failed to transform response: %v", endpoint.Name, err)
 		return 0, 0, err
 	}
+	transformedResp = rewriteJSONModelFields(transformedResp, displayModel)
 
 	logger.DebugLog("[%s] Transformed Response: %s", endpoint.Name, string(transformedResp))
 

@@ -76,6 +76,7 @@ func TestHandleStreamingResponseExtractsUsageFromOriginalEvent(t *testing.T) {
 		[]byte(`{}`),
 		0,
 		nil,
+		"",
 	)
 	in, out := result.InputTokens, result.OutputTokens
 
@@ -126,6 +127,7 @@ func TestHandleStreamingResponseSynthesizesResponsesCompletedBeforeDone(t *testi
 		[]byte(`{"model":"gpt-5.5","stream":true,"input":[]}`),
 		0,
 		nil,
+		"",
 	)
 
 	if result.Err != nil {
@@ -191,6 +193,7 @@ func TestHandleStreamingResponseTreatsGenericResponsesToolEventsAsSemantic(t *te
 		[]byte(`{"model":"gpt-5.5","stream":true,"input":[]}`),
 		0,
 		nil,
+		"",
 	)
 
 	if result.Err != nil {
@@ -249,6 +252,7 @@ func TestHandleStreamingResponseAppendsDoneAfterResponsesCompletedEOF(t *testing
 		[]byte(`{"model":"gpt-5.5","stream":true,"input":[]}`),
 		0,
 		nil,
+		"",
 	)
 
 	if result.Err != nil {
@@ -300,6 +304,7 @@ func TestHandleStreamingResponseTreatsEOFBeforeResponsesCompletedAsSyntheticSucc
 		[]byte(`{"model":"gpt-5.5","stream":true,"input":[]}`),
 		0,
 		nil,
+		"",
 	)
 
 	if result.Err != nil {

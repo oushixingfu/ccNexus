@@ -228,6 +228,19 @@ p {
     margin-right: 0.5rem;
 }
 
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.checkbox-row .form-checkbox {
+    margin-right: 0;
+}
+
 /* Grid */
 .grid {
     display: grid;

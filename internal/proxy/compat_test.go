@@ -52,6 +52,53 @@ func TestCompatibilityModelRoutesDoNotRequireRequestBody(t *testing.T) {
 	}
 }
 
+func TestCompatibilityModelDetailRouteDoesNotRequireRequestBody(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{
+		{
+			Name:        "Gateway",
+			APIUrl:      "https://gateway.example.com",
+			APIKey:      "test-key",
+			AuthMode:    config.AuthModeAPIKey,
+			Enabled:     true,
+			Transformer: "openai2",
+			Model:       "gpt-5.5",
+		},
+	})
+	cfg.UpdateUnifiedModel(&config.UnifiedModelConfig{
+		Enabled:                          true,
+		Name:                             "gpt-5.5",
+		Aliases:                          []string{"gpt-auto"},
+		AdvertiseOnlyUnifiedModel:        true,
+		EndpointScope:                    config.UnifiedModelEndpointScopeAllEnabled,
+		HotStandby:                       true,
+		PreserveExplicitEndpointOverride: true,
+	})
+	p := &Proxy{
+		config:      cfg,
+		modelsCache: NewModelsCache(30),
+	}
+
+	mux := http.NewServeMux()
+	p.registerRoutes(mux)
+
+	for _, path := range []string{"/v1/models/gpt-5.5", "/v1/models/gpt-auto"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected HTTP 200, got %d body=%q", path, rec.Code, rec.Body.String())
+		}
+		var model ModelInfo
+		if err := json.Unmarshal(rec.Body.Bytes(), &model); err != nil {
+			t.Fatalf("%s: failed to decode response: %v", path, err)
+		}
+		if model.ID != "gpt-5.5" || model.EndpointID != "unified" {
+			t.Fatalf("%s: unexpected model detail: %#v", path, model)
+		}
+	}
+}
+
 func TestCompatibilityProbeRoutes(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{

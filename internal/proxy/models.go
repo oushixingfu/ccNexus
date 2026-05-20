@@ -353,6 +353,33 @@ func (p *Proxy) handleModels(w http.ResponseWriter, r *http.Request) {
 	p.writeModelsResponse(w, allModels)
 }
 
+func (p *Proxy) handleModelDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	modelID := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	for _, model := range p.loadModelsForResponse(false) {
+		if strings.EqualFold(model.ID, modelID) || config.UnifiedModelMatches(p.unifiedModelConfig(), modelID) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if err := json.NewEncoder(w).Encode(model); err != nil {
+				logger.Debug("Failed to encode model detail response: %v", err)
+			}
+			return
+		}
+	}
+
+	http.NotFound(w, r)
+}
+
 func (p *Proxy) loadModelsForResponse(refresh bool) []ModelInfo {
 	if models, ok := p.unifiedModelsForResponse(); ok {
 		return models

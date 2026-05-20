@@ -230,6 +230,15 @@ export default {
 	    },
 	    settings: {
 	        title: 'Settings',
+	        unifiedModelTitle: 'Unified Model',
+	        unifiedModel: {
+	            enabled: 'Enable unified model routing',
+	            name: 'Only exposed model name',
+	            aliases: 'Compatible aliases, comma-separated',
+	            advertiseOnly: 'Expose only the unified model in model list',
+	            hotStandby: 'Keep all enabled endpoints in hot standby checks',
+	            preserveOverride: 'Preserve explicit endpoint routing'
+	        },
 	        failoverTitle: 'Failover Policy',
 	        routingStrategy: 'Global Strategy',
 	        routingStrategies: {

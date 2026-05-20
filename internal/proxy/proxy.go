@@ -172,6 +172,7 @@ func (p *Proxy) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/favicon.ico", p.handleNoContent)
 	mux.HandleFunc("/v1/messages/count_tokens", p.handleCountTokens)
 	mux.HandleFunc("/v1/models", p.handleModels)
+	mux.HandleFunc("/v1/models/", p.handleModelDetail)
 	mux.HandleFunc("/models", p.handleModels)
 	mux.HandleFunc("/api/v1/models", p.handleModels)
 	mux.HandleFunc("/api/tags", p.handleOllamaTags)
@@ -899,7 +900,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 				status := p.recordRetryableRequestFailure(endpoint.Name, retryReason)
 				p.emitEndpointRuntimeEvent(endpoint.Name, "failure", status)
 				p.markRequestInactive(endpoint.Name)
-				if endpointAttempts >= endpointFastFailoverAttempts {
+				if shouldFailoverAfterRequestError(err, endpointAttempts) {
 					advanceForFailure(endpoint, retryReason, attemptNumber, nil)
 				} else {
 					logRequestAttemptWarn(obs, endpoint.Name, attemptNumber, 0, retryReason, "Retryable transport error, retrying same endpoint: %v", err)

@@ -230,6 +230,15 @@ export default {
 	    },
 	    settings: {
 	        title: '设置',
+	        unifiedModelTitle: '统一模型',
+	        unifiedModel: {
+	            enabled: '启用统一模型路由',
+	            name: '唯一暴露模型名称',
+	            aliases: '兼容别名（逗号分隔）',
+	            advertiseOnly: '模型列表只暴露统一模型',
+	            hotStandby: '所有启用端点保持热备检查',
+	            preserveOverride: '显式指定端点时保留原端点路由'
+	        },
 	        failoverTitle: '故障转移策略',
 	        routingStrategy: '全局策略',
 	        routingStrategies: {

@@ -992,8 +992,8 @@ func TestStreamingResponseHeaderTimeoutKeepsDownstreamOpenAndFallsBack(t *testin
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected downstream SSE to remain open and succeed, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if primaryHits != endpointFastFailoverAttempts {
-		t.Fatalf("expected Primary to time out %d times before fallback, got %d", endpointFastFailoverAttempts, primaryHits)
+	if primaryHits != 1 {
+		t.Fatalf("expected Primary to time out once before fallback, got %d", primaryHits)
 	}
 	if fallbackHits != 1 {
 		t.Fatalf("expected fallback to be used once, got %d", fallbackHits)
@@ -1013,7 +1013,7 @@ func TestStreamingResponseHeaderTimeoutKeepsDownstreamOpenAndFallsBack(t *testin
 	}
 }
 
-func TestStreamingResponseHeaderTimeoutDisabledByDefault(t *testing.T) {
+func TestStreamingResponseHeaderTimeoutDefaultAllowsPromptUpstreamHeaders(t *testing.T) {
 	logger.GetLogger().Clear()
 	logger.GetLogger().SetMinLevel(logger.DEBUG)
 
@@ -1062,13 +1062,13 @@ func TestStreamingResponseHeaderTimeoutDisabledByDefault(t *testing.T) {
 		failoverPolicyTestEndpoint("Fallback", "https://fallback.example"),
 	}, client)
 	p.streamHeartbeatInterval = time.Hour
-	if timeout := p.streamHeaderTimeoutOrDefault(); timeout != 0 {
-		t.Fatalf("expected default streaming response-header timeout to be disabled, got %s", timeout)
+	if timeout := p.streamHeaderTimeoutOrDefault(); timeout != defaultStreamHeaderTimeout {
+		t.Fatalf("expected default streaming response-header timeout %s, got %s", defaultStreamHeaderTimeout, timeout)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[]}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(headerCCNexusRequestID, "req-stream-header-timeout-default-off")
+	req.Header.Set(headerCCNexusRequestID, "req-stream-header-timeout-default")
 	rec := httptest.NewRecorder()
 	p.handleProxy(rec, req)
 
@@ -1079,10 +1079,13 @@ func TestStreamingResponseHeaderTimeoutDisabledByDefault(t *testing.T) {
 		t.Fatalf("expected primary to be used once, got %d", primaryHits)
 	}
 	if fallbackHits != 0 {
-		t.Fatalf("expected fallback not to be used when default header timeout is disabled, got %d", fallbackHits)
+		t.Fatalf("expected fallback not to be used before default header timeout, got %d", fallbackHits)
+	}
+	if !strings.Contains(rec.Body.String(), "resp-primary") {
+		t.Fatalf("expected primary stream body to reach client, got %q", rec.Body.String())
 	}
 	if strings.Contains(joinedProxyLogs(), "retry_reason=transient_network_error") {
-		t.Fatalf("did not expect transient retry logs when default header timeout is disabled, logs:\n%s", joinedProxyLogs())
+		t.Fatalf("did not expect transient retry logs before default header timeout, logs:\n%s", joinedProxyLogs())
 	}
 }
 

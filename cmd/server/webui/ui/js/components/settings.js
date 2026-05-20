@@ -15,6 +15,16 @@ const defaultFailover = {
     }
 };
 
+const defaultUnifiedModel = {
+    enabled: false,
+    name: 'gpt-5.5',
+    aliases: [],
+    advertiseOnlyUnifiedModel: true,
+    endpointScope: 'all_enabled',
+    hotStandby: true,
+    preserveExplicitEndpointOverride: true
+};
+
 class Settings {
     constructor() {
         this.container = document.getElementById('view-container');
@@ -29,12 +39,46 @@ class Settings {
         this.container.innerHTML = `
             <div class="settings">
                 <h1>${t('settings.title')}</h1>
-                <div class="card mt-3">
-                    <div class="card-header">
-                        <h3 class="card-title">${t('settings.failoverTitle')}</h3>
+                <form id="settings-form">
+                    <div class="card mt-3">
+                        <div class="card-header">
+                            <h3 class="card-title">${t('settings.unifiedModelTitle')}</h3>
+                        </div>
+                        <div class="card-body">
+                            <label class="checkbox-row">
+                                <input type="checkbox" class="form-checkbox" name="unifiedModelEnabled">
+                                <span>${t('settings.unifiedModel.enabled')}</span>
+                            </label>
+                            <div class="grid grid-cols-2">
+                                <div class="form-group">
+                                    <label class="form-label">${t('settings.unifiedModel.name')}</label>
+                                    <input class="form-input" type="text" name="unifiedModelName" autocomplete="off">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">${t('settings.unifiedModel.aliases')}</label>
+                                    <input class="form-input" type="text" name="unifiedModelAliases" autocomplete="off" placeholder="gpt-auto">
+                                </div>
+                            </div>
+                            <label class="checkbox-row">
+                                <input type="checkbox" class="form-checkbox" name="unifiedModelAdvertiseOnly">
+                                <span>${t('settings.unifiedModel.advertiseOnly')}</span>
+                            </label>
+                            <label class="checkbox-row">
+                                <input type="checkbox" class="form-checkbox" name="unifiedModelHotStandby">
+                                <span>${t('settings.unifiedModel.hotStandby')}</span>
+                            </label>
+                            <label class="checkbox-row">
+                                <input type="checkbox" class="form-checkbox" name="unifiedModelPreserveOverride">
+                                <span>${t('settings.unifiedModel.preserveOverride')}</span>
+                            </label>
+                        </div>
                     </div>
-                    <div class="card-body">
-                        <form id="settings-form">
+
+                    <div class="card mt-3">
+                        <div class="card-header">
+                            <h3 class="card-title">${t('settings.failoverTitle')}</h3>
+                        </div>
+                        <div class="card-body">
                             <div class="form-group">
                                 <label class="form-label">${t('settings.routingStrategy')}</label>
                                 <select class="form-select" name="routingStrategy">
@@ -58,10 +102,10 @@ class Settings {
                                 ${this.renderCooldownInput('tokenUnavailableSec', t('settings.cooldowns.tokenUnavailable'))}
                                 ${this.renderCooldownInput('configErrorSec', t('settings.cooldowns.configError'))}
                             </div>
-                            <button type="submit" class="btn btn-primary mt-3">${t('common.save')}</button>
-                        </form>
+                        </div>
                     </div>
-                </div>
+                    <button type="submit" class="btn btn-primary mt-3">${t('common.save')}</button>
+                </form>
             </div>
         `;
 
@@ -82,7 +126,14 @@ class Settings {
         try {
             const config = await api.getConfig();
             const failover = this.normalizeFailover(config.failover);
+            const unifiedModel = this.normalizeUnifiedModel(config.unifiedModel);
             const form = document.getElementById('settings-form');
+            form.elements.unifiedModelEnabled.checked = unifiedModel.enabled;
+            form.elements.unifiedModelName.value = unifiedModel.name;
+            form.elements.unifiedModelAliases.value = unifiedModel.aliases.join(', ');
+            form.elements.unifiedModelAdvertiseOnly.checked = unifiedModel.advertiseOnlyUnifiedModel;
+            form.elements.unifiedModelHotStandby.checked = unifiedModel.hotStandby;
+            form.elements.unifiedModelPreserveOverride.checked = unifiedModel.preserveExplicitEndpointOverride;
             form.elements.routingStrategy.value = this.normalizeRoutingStrategy(config.routingStrategy);
             form.elements.recoveredEndpointPolicy.value = failover.recoveredEndpointPolicy;
             Object.entries(failover.cooldowns).forEach(([key, value]) => {
@@ -104,7 +155,17 @@ class Settings {
         };
 
         try {
+            const unifiedModelName = form.elements.unifiedModelName.value.trim() || defaultUnifiedModel.name;
             await api.updateConfig({
+                unifiedModel: {
+                    enabled: form.elements.unifiedModelEnabled.checked,
+                    name: unifiedModelName,
+                    aliases: this.parseAliases(form.elements.unifiedModelAliases.value, unifiedModelName),
+                    advertiseOnlyUnifiedModel: form.elements.unifiedModelAdvertiseOnly.checked,
+                    endpointScope: defaultUnifiedModel.endpointScope,
+                    hotStandby: form.elements.unifiedModelHotStandby.checked,
+                    preserveExplicitEndpointOverride: form.elements.unifiedModelPreserveOverride.checked
+                },
                 routingStrategy: this.normalizeRoutingStrategy(form.elements.routingStrategy.value),
                 failover: {
                     recoveredEndpointPolicy: form.elements.recoveredEndpointPolicy.value,
@@ -123,6 +184,34 @@ class Settings {
         } catch (error) {
             notifications.error(`${t('settings.failedToSave')}: ${error.message}`);
         }
+    }
+
+    normalizeUnifiedModel(unifiedModel) {
+        const aliases = Array.isArray(unifiedModel?.aliases) ? unifiedModel.aliases : defaultUnifiedModel.aliases;
+        return {
+            enabled: Boolean(unifiedModel?.enabled),
+            name: typeof unifiedModel?.name === 'string' && unifiedModel.name.trim() ? unifiedModel.name.trim() : defaultUnifiedModel.name,
+            aliases: aliases.filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()),
+            advertiseOnlyUnifiedModel: unifiedModel?.advertiseOnlyUnifiedModel !== false,
+            endpointScope: unifiedModel?.endpointScope || defaultUnifiedModel.endpointScope,
+            hotStandby: unifiedModel?.hotStandby !== false,
+            preserveExplicitEndpointOverride: unifiedModel?.preserveExplicitEndpointOverride !== false
+        };
+    }
+
+    parseAliases(value, modelName) {
+        const seen = new Set([modelName.toLowerCase()]);
+        return String(value || '')
+            .split(',')
+            .map((alias) => alias.trim())
+            .filter((alias) => {
+                const key = alias.toLowerCase();
+                if (!alias || seen.has(key)) {
+                    return false;
+                }
+                seen.add(key);
+                return true;
+            });
     }
 
     normalizeFailover(failover) {

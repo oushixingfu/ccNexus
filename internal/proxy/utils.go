@@ -36,8 +36,7 @@ const (
 	endpointSlowFailoverAttempts  = 3
 	semanticEmptyFailoverAttempts = 5
 
-	// Disabled by default; the HTTP transport still enforces its 90s ResponseHeaderTimeout.
-	defaultStreamHeaderTimeout     = 0 * time.Second
+	defaultStreamHeaderTimeout     = 20 * time.Second
 	defaultStreamHeartbeatInterval = 10 * time.Second
 	retryReasonEndpointAuthFailed  = "endpoint_auth_failed"
 	retryReasonEndpointCapability  = "endpoint_capability_mismatch"
@@ -101,6 +100,13 @@ func isRetryableRequestErrorReason(reason string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldFailoverAfterRequestError(err error, endpointAttempts int) bool {
+	if isResponseHeaderTimeoutError(err) {
+		return true
+	}
+	return endpointAttempts >= endpointFastFailoverAttempts
 }
 
 func isTransportProtocolError(err error) bool {

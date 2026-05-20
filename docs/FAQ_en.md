@@ -4,7 +4,7 @@
 
 **Q: Does this branch support Windows/macOS GUI installer packages?**
 
-The optimized branch is intended to run as server/Docker + Web UI. The Wails desktop source still exists under `cmd/desktop` for legacy development, but Windows/macOS GUI installer packages are not the recommended deployment path for this branch.
+This branch is intended to run as server/Docker + Web UI. The Wails desktop source still exists under `cmd/desktop` for legacy development, but Windows/macOS GUI installer packages are not the recommended deployment path for this branch.
 
 **Q: Port is in use?**
 

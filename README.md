@@ -15,9 +15,9 @@
 ccNexus 是面向 Claude Code、Codex CLI、Hermes Agent 与 OpenClaw 的智能 API Provider 与端点轮换代理。它把端点、模型、密钥、Codex Token Pool、额度、统计和备份统一管理起来，并对外提供一个稳定的本地 API Provider：Hermes、OpenClaw、Codex、Claude Code 等客户端只需指向 ccNexus，就可以在不同上游、账号、模型之间热切换，无需反复修改每个工具的配置。
 
 > [!IMPORTANT]
-> 当前仓库维护 Optimized server/Web UI 版本，重点增强 Codex CLI、Claude Code、Hermes Agent、OpenClaw、OpenAI Responses API、DeepSeek、Kimi 等兼容场景。
+> 当前 fork 维护 server/Web UI 方向，重点增强 Codex CLI、Claude Code、Hermes Agent、OpenClaw、OpenAI Responses API、DeepSeek、Kimi 等兼容场景。
 >
-> 推荐部署方式是 server 模式或 Docker + Web UI。仓库中仍保留 `cmd/desktop` 的 Wails 桌面源码用于历史兼容和开发参考，但当前优化分支不把 Windows/macOS GUI 安装包作为推荐部署目标。
+> 推荐部署方式是 server 模式或 Docker + Web UI。仓库中仍保留 `cmd/desktop` 的 Wails 桌面源码用于历史兼容和开发参考，但当前维护分支不把 Windows/macOS GUI 安装包作为推荐部署目标。
 
 ## 功能特性
 
@@ -37,9 +37,9 @@ ccNexus 是面向 Claude Code、Codex CLI、Hermes Agent 与 OpenClaw 的智能 
 
 ## 与初代版本的设计取舍
 
-Optimized 版本延续了 [lich0821/ccNexus](https://github.com/lich0821/ccNexus) 初代项目“本地统一代理入口”的核心思路，但把重点从简单轮换扩展到长期运行、多端点并发和复杂上游错误恢复。初代逻辑更直接，适合轻量场景；Optimized 版本更强调韧性、可观测性和 Codex/Responses 兼容。
+当前 fork 延续了 [lich0821/ccNexus](https://github.com/lich0821/ccNexus) 初代项目“本地统一代理入口”的核心思路，但把重点从简单轮换扩展到长期运行、多端点并发和复杂上游错误恢复。初代逻辑更直接，适合轻量场景；当前维护分支更强调韧性、可观测性和 Codex/Responses 兼容。
 
-| 维度 | 初代版本优势 | Optimized 版本增强 |
+| 维度 | 初代版本优势 | 当前 fork 增强 |
 |------|--------------|--------------------|
 | 故障切换模型 | 失败后全局轮换端点，行为直观，排查简单 | 单次请求内 fallback，不轻易改变全局默认端点，并发请求互不污染 |
 | 错误识别 | 策略简单，维护成本低 | 区分额度耗尽、限流、上游 5xx、网络异常、API Key 失效、客户端 invalid request 等场景 |
@@ -47,7 +47,7 @@ Optimized 版本延续了 [lich0821/ccNexus](https://github.com/lich0821/ccNexus
 | 流式稳定性 | 实现简洁，接近传统 HTTP 代理行为 | 支持 SSE heartbeat、上游强制流式、流式错误分类和 200 但空输出的语义检测 |
 | 运维可见性 | 基础日志和统计 | Request ID、重试次数、失败原因、端点运行态与凭证级用量/额度快照 |
 
-如果只需要一个简单的本地轮换代理，初代设计非常清爽；如果要把 Claude Code、Codex CLI、Hermes Agent、OpenClaw、Token Pool 和多个第三方上游长期放在一起跑，并在这些客户端之间共享同一个可热切换的 API Provider，Optimized 版本提供了更细的隔离、恢复和观测能力。
+如果只需要一个简单的本地轮换代理，初代设计非常清爽；如果要把 Claude Code、Codex CLI、Hermes Agent、OpenClaw、Token Pool 和多个第三方上游长期放在一起跑，并在这些客户端之间共享同一个可热切换的 API Provider，当前 fork 提供了更细的隔离、恢复和观测能力。
 
 ## 客户端兼容状态
 
@@ -167,7 +167,7 @@ wire_api = "responses"  # 或 "chat"
 |------|------|----------|
 | Server | `cmd/server` | 本机、远程服务器、NAS、Docker、无头 API 代理 |
 | Web UI | `cmd/server/webui` | 浏览器中管理端点、Token Pool、统计、备份和故障转移策略 |
-| Desktop source | `cmd/desktop` | 历史 Wails 源码保留；不是当前优化分支的推荐安装方式 |
+| Desktop source | `cmd/desktop` | 历史 Wails 源码保留；不是当前维护分支的推荐安装方式 |
 
 server 模式支持 `CCNEXUS_PORT`、`CCNEXUS_LOG_LEVEL`、`CCNEXUS_DB_PATH`、`CCNEXUS_DATA_DIR`、`CCNEXUS_BASIC_AUTH_USERNAME`、`CCNEXUS_BASIC_AUTH_PASSWORD` 等环境变量。
 

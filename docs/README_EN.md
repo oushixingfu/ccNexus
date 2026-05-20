@@ -15,9 +15,9 @@
 ccNexus is more than a smart endpoint rotation proxy for Claude Code, Codex CLI, Hermes Agent, and OpenClaw. It is an API resource management system for AI development workflows, bringing endpoints, models, API keys, Codex Token Pools, quota snapshots, usage statistics, and backups into one local control plane. It also works as a stable local API provider: point Hermes, OpenClaw, Codex, Claude Code, and compatible clients at ccNexus once, then hot-switch between upstream providers, accounts, and models without repeatedly editing every tool's config.
 
 > [!IMPORTANT]
-> This fork maintains the Optimized server/Web UI line, with extra compatibility for Codex CLI, Claude Code, Hermes Agent, OpenClaw, OpenAI Responses API, DeepSeek, and Kimi/Moonshot.
+> This fork focuses on server mode and the Web UI, with extra compatibility for Codex CLI, Claude Code, Hermes Agent, OpenClaw, OpenAI Responses API, DeepSeek, and Kimi/Moonshot.
 >
-> The recommended installation path for this branch is server mode or Docker. Desktop/Wails source code remains in the repository for legacy development, but Windows/macOS GUI release packages are not the supported deployment target for this optimized line.
+> The recommended installation path for this branch is server mode or Docker. Desktop/Wails source code remains in the repository for legacy development, but Windows/macOS GUI release packages are not the supported deployment target for this branch.
 
 ## Features
 
@@ -37,9 +37,9 @@ ccNexus is more than a smart endpoint rotation proxy for Claude Code, Codex CLI,
 
 ## Design Trade-Offs vs. the Original Project
 
-The Optimized line keeps the original [lich0821/ccNexus](https://github.com/lich0821/ccNexus) idea of one local proxy gateway, while shifting the focus from simple rotation to long-running, multi-endpoint, concurrent AI workflows. The original design is smaller and easier to reason about; the Optimized line puts more weight on resilience, observability, and Codex/Responses compatibility.
+This fork keeps the original [lich0821/ccNexus](https://github.com/lich0821/ccNexus) idea of one local proxy gateway, while shifting the focus from simple rotation to long-running, multi-endpoint, concurrent AI workflows. The original design is smaller and easier to reason about; this branch puts more weight on resilience, observability, and Codex/Responses compatibility.
 
-| Area | Original Strength | Optimized Improvement |
+| Area | Original Strength | Current Fork Improvement |
 |------|-------------------|-----------------------|
 | Failover model | Global endpoint rotation after failures, direct and easy to inspect | Request-local fallback that avoids changing the global default endpoint for unrelated requests |
 | Error handling | Simple policy with low maintenance overhead | Classifies quota exhaustion, rate limits, upstream 5xx, network errors, API key failures, and wrapped invalid requests |
@@ -47,7 +47,7 @@ The Optimized line keeps the original [lich0821/ccNexus](https://github.com/lich
 | Streaming reliability | Compact traditional proxy behavior | SSE heartbeat, forced upstream streaming, streaming error classification, and semantic empty-output detection |
 | Operations visibility | Basic logs and stats | Request IDs, attempt headers, retry reasons, endpoint runtime state, and per-credential usage/quota snapshots |
 
-For a lightweight local rotation proxy, the original version remains refreshingly simple. For running Claude Code, Codex CLI, Hermes Agent, OpenClaw, Token Pools, and multiple third-party upstreams together for long sessions while sharing one hot-switchable API provider across clients, the Optimized line provides stronger isolation, recovery, and visibility.
+For a lightweight local rotation proxy, the original version remains refreshingly simple. For running Claude Code, Codex CLI, Hermes Agent, OpenClaw, Token Pools, and multiple third-party upstreams together for long sessions while sharing one hot-switchable API provider across clients, this fork provides stronger isolation, recovery, and visibility.
 
 ## Client Compatibility
 

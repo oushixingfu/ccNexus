@@ -4,7 +4,7 @@
 
 **Q: 当前分支支持 Windows/macOS GUI 安装包吗？**
 
-当前优化分支推荐使用 server/Docker + Web UI。仓库里仍保留 `cmd/desktop` 的 Wails 桌面源码，但不把 Windows/macOS GUI 安装包作为当前分支的推荐部署方式。
+当前维护分支推荐使用 server/Docker + Web UI。仓库里仍保留 `cmd/desktop` 的 Wails 桌面源码，但不把 Windows/macOS GUI 安装包作为当前分支的推荐部署方式。
 
 **Q: 端口被占用？**
 

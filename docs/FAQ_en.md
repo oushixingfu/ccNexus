@@ -2,17 +2,13 @@
 
 ## Installation and Startup
 
-**Q: Windows shows "Windows protected your PC"?**
+**Q: Does this branch support Windows/macOS GUI installer packages?**
 
-Click "More info" → "Run anyway". The app is not digitally signed, but it works fine.
-
-**Q: macOS shows "Cannot be opened because the developer cannot be verified"?**
-
-Right-click the app → Select "Open" → Click "Open". Or allow it in "System Preferences" → "Security & Privacy".
+The optimized branch is intended to run as server/Docker + Web UI. The Wails desktop source still exists under `cmd/desktop` for legacy development, but Windows/macOS GUI installer packages are not the recommended deployment path for this branch.
 
 **Q: Port is in use?**
 
-Click the port number at the top of the interface and change it to another port (e.g., 3001).
+In server mode, set `CCNEXUS_PORT` or use the port flag. In Docker, change the host port mapping, for example `127.0.0.1:3022:3000`.
 
 ## Endpoint Configuration
 

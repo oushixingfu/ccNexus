@@ -5,10 +5,8 @@
 </p>
 
 [![Build Status](https://github.com/jackychanisnotme/ccNexus/actions/workflows/build.yml/badge.svg)](https://github.com/jackychanisnotme/ccNexus/actions)
-[![Latest Release](https://img.shields.io/github/v/release/jackychanisnotme/ccNexus?label=release)](https://github.com/jackychanisnotme/ccNexus/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
-[![Wails](https://img.shields.io/badge/Wails-v2-blue)](https://wails.io/)
 
 [English](README_EN.md) | [简体中文](../README.md)
 
@@ -17,9 +15,9 @@
 ccNexus is more than a smart endpoint rotation proxy for Claude Code, Codex CLI, Hermes Agent, and OpenClaw. It is an API resource management system for AI development workflows, bringing endpoints, models, API keys, Codex Token Pools, quota snapshots, usage statistics, and backups into one local control plane. It also works as a stable local API provider: point Hermes, OpenClaw, Codex, Claude Code, and compatible clients at ccNexus once, then hot-switch between upstream providers, accounts, and models without repeatedly editing every tool's config.
 
 > [!IMPORTANT]
-> This fork maintains the Optimized line, with extra compatibility for Codex CLI, Claude Code, Hermes Agent, OpenClaw, OpenAI Responses API, DeepSeek, and Kimi/Moonshot.
+> This fork maintains the Optimized server/Web UI line, with extra compatibility for Codex CLI, Claude Code, Hermes Agent, OpenClaw, OpenAI Responses API, DeepSeek, and Kimi/Moonshot.
 >
-> Latest release: [`ccNexus Optimized`](https://github.com/jackychanisnotme/ccNexus/releases/latest)
+> The recommended installation path for this branch is server mode or Docker. Desktop/Wails source code remains in the repository for legacy development, but Windows/macOS GUI release packages are not the supported deployment target for this optimized line.
 
 ## Features
 
@@ -34,7 +32,7 @@ ccNexus is more than a smart endpoint rotation proxy for Claude Code, Codex CLI,
 - **Forced Streaming Upstream Mode**: Use streaming upstream requests for providers that reject non-streaming calls while aggregating output for non-streaming clients
 - **Model and Compatibility APIs**: Serve `/v1/models`, `/models`, `/api/tags`, `/version`, `/props`, `/health`, and `/stats` for client discovery and monitoring
 - **Live Statistics**: Event-driven usage updates with today/yesterday/week/month views
-- **Desktop and Server Modes**: Use the Wails desktop app locally, or run `cmd/server` headlessly on a server, NAS, or Docker host
+- **Server and Web UI Mode**: Run `cmd/server` headlessly on a local machine, server, NAS, or Docker host, then manage endpoints from the browser Web UI
 - **Backup and Sync**: Support WebDAV, local backups, and S3-compatible storage
 
 ## Design Trade-Offs vs. the Original Project
@@ -69,14 +67,37 @@ For a lightweight local rotation proxy, the original version remains refreshingl
 
 ## Quick Start
 
-### 1. Download and Install
+### 1. Run Server Mode
 
-[Download the latest release from this fork](https://github.com/jackychanisnotme/ccNexus/releases/latest)
+Build or run the headless server:
 
-- **macOS**: Extract the `.zip`, move `ccNexus.app` to Applications, then right-click → Open for the first run
-- **Windows**: Download `windows-amd64.zip`, extract it, then run `ccNexus.exe`
-- **Linux**: Build from source, or use server mode/Docker
-- **Server mode**: `cd cmd/server && go run main.go`
+```bash
+cd cmd/server
+go run main.go
+```
+
+Or build a standalone server binary:
+
+```bash
+cd cmd/server
+go build -ldflags="-s -w" -o ccnexus-server .
+./ccnexus-server
+```
+
+Docker is also supported:
+
+```bash
+docker build -f cmd/server/Dockerfile -t ccnexus .
+docker run -d --name ccnexus \
+  -p 127.0.0.1:3021:3000 \
+  -v "$PWD/ccnexus-data:/data" \
+  -e CCNEXUS_DATA_DIR=/data \
+  -e CCNEXUS_DB_PATH=/data/ccnexus.db \
+  -e CCNEXUS_PORT=3000 \
+  ccnexus
+```
+
+Open the Web UI at `http://127.0.0.1:3021/ui/` when using the Docker example above, or at the configured server port.
 
 ### 2. Add Endpoints
 
@@ -137,8 +158,9 @@ wire_api = "responses"  # or "chat"
 
 | Mode | Entry | Best For |
 |------|-------|----------|
-| Desktop | `cmd/desktop` | Local GUI, tray app, visual endpoint and Token Pool management |
-| Server | `cmd/server` | Remote servers, NAS, Docker, and headless HTTP proxy usage |
+| Server | `cmd/server` | Local machines, remote servers, NAS, Docker, and headless HTTP proxy usage |
+| Web UI | `cmd/server/webui` | Browser-based endpoint, Token Pool, stats, backup, and failover management |
+| Desktop source | `cmd/desktop` | Legacy Wails source retained for development; not the recommended packaged install path for this branch |
 
 Server mode supports `CCNEXUS_PORT`, `CCNEXUS_LOG_LEVEL`, `CCNEXUS_DB_PATH`, `CCNEXUS_DATA_DIR`, `CCNEXUS_BASIC_AUTH_USERNAME`, and `CCNEXUS_BASIC_AUTH_PASSWORD`.
 

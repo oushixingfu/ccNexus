@@ -30,6 +30,32 @@ export function getEndpointTestStatus(endpointName) {
     }
 }
 
+export function getEndpointAvailabilityStatus(endpointName) {
+    const runtimeStatus = endpointRuntimeStatuses[endpointName] || {};
+    const availability = String(runtimeStatus.availability || '').trim();
+    if (availability === 'available') {
+        return true;
+    }
+    if (availability === 'unavailable') {
+        return false;
+    }
+    if (availability === 'unknown') {
+        return 'unknown';
+    }
+    return getEndpointTestStatus(endpointName);
+}
+
+function endpointAvailabilityDisplay(endpointName) {
+    const availability = getEndpointAvailabilityStatus(endpointName);
+    if (availability === true) {
+        return { icon: '✅', title: t('endpoints.testTipSuccess') };
+    }
+    if (availability === false) {
+        return { icon: '❌', title: t('endpoints.testTipFailed') };
+    }
+    return { icon: '⚠️', title: t('endpoints.testTipUnknown') };
+}
+
 // 保存端点测试状态
 export function saveEndpointTestStatus(endpointName, success) {
     try {
@@ -221,6 +247,16 @@ function updateRuntimeStatusSlot(endpointName) {
     });
 }
 
+function updateEndpointAvailabilityIcon(endpointName) {
+    const display = endpointAvailabilityDisplay(endpointName);
+    document.querySelectorAll('.endpoint-availability-icon').forEach(icon => {
+        if (icon.dataset.name === endpointName) {
+            icon.textContent = display.icon;
+            icon.title = display.title;
+        }
+    });
+}
+
 function updateDefaultEndpointSlots() {
     document.querySelectorAll('.endpoint-default-slot').forEach(slot => {
         const endpointName = slot.dataset.name || '';
@@ -390,22 +426,14 @@ export async function renderEndpoints(endpoints) {
             setupDragAndDrop(item, container);
         }
 
-        // 获取测试状态：true=成功显示✅，false=失败显示❌，undefined/unknown=未测试/未知显示⚠️
-        const testStatus = getEndpointTestStatus(ep.name);
-        let testStatusIcon = '⚠️';
-        let testStatusTip = t('endpoints.testTipUnknown');
-        if (testStatus === true) {
-            testStatusIcon = '✅';
-            testStatusTip = t('endpoints.testTipSuccess');
-        } else if (testStatus === false) {
-            testStatusIcon = '❌';
-            testStatusTip = t('endpoints.testTipFailed');
-        }
+        const availabilityDisplay = endpointAvailabilityDisplay(ep.name);
+        const testStatusIcon = availabilityDisplay.icon;
+        const testStatusTip = availabilityDisplay.title;
 
         item.innerHTML = `
             <div class="endpoint-info">
                 <h3>
-                    <span title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
+                    <span class="endpoint-availability-icon" data-name="${escapeHtml(ep.name)}" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
                     ${ep.name}
                     ${!enabled ? '<span class="disabled-badge">' + t('endpoints.disabled') + '</span>' : ''}
                     <span class="endpoint-default-slot" data-name="${escapeHtml(ep.name)}" data-enabled="${enabled ? 'true' : 'false'}" data-view="detail">${renderDefaultEndpointControl(ep.name, enabled)}</span>
@@ -1698,23 +1726,36 @@ export function initEndpointSuccessListener() {
                 return;
             }
             endpointActiveCounts[endpointName] = Number(event.activeCount || 0);
+            const previousStatus = endpointRuntimeStatuses[endpointName] || {};
+            const eventType = String(event.event || '').trim();
+            const hasFailureReason = Object.prototype.hasOwnProperty.call(event, 'lastFailureReason');
             const hasFailureStatusCode = Object.prototype.hasOwnProperty.call(event, 'lastFailureStatusCode');
-            const currentFailureStatusCode = Number(endpointRuntimeStatuses[endpointName]?.lastFailureStatusCode || 0);
+            const nextFailureReason = eventType === 'success'
+                ? ''
+                : (hasFailureReason ? (event.lastFailureReason || '') : previousStatus.lastFailureReason);
+            const nextFailureStatusCode = eventType === 'success'
+                ? 0
+                : (hasFailureStatusCode ? Number(event.lastFailureStatusCode || 0) : Number(previousStatus.lastFailureStatusCode || 0));
+            const availabilityPatch = eventType === 'success'
+                ? { available: true, availability: 'available', availabilityReason: '', availabilityStatusCode: 0 }
+                : (eventType === 'failure'
+                    ? { available: false, availability: 'unavailable', availabilityReason: nextFailureReason || '', availabilityStatusCode: nextFailureStatusCode }
+                    : {});
             endpointRuntimeStatuses[endpointName] = {
-                ...(endpointRuntimeStatuses[endpointName] || {}),
+                ...previousStatus,
                 endpointName,
-                lastSuccessAt: event.lastSuccessAt || endpointRuntimeStatuses[endpointName]?.lastSuccessAt,
-                lastFailureAt: event.lastFailureAt || endpointRuntimeStatuses[endpointName]?.lastFailureAt,
-                lastFailureReason: event.lastFailureReason || endpointRuntimeStatuses[endpointName]?.lastFailureReason,
-                lastFailureStatusCode: hasFailureStatusCode
-                    ? Number(event.lastFailureStatusCode || 0)
-                    : (event.event === 'failure' ? 0 : currentFailureStatusCode),
-                lastAttemptAt: event.lastAttemptAt || endpointRuntimeStatuses[endpointName]?.lastAttemptAt
+                ...availabilityPatch,
+                lastSuccessAt: event.lastSuccessAt || previousStatus.lastSuccessAt,
+                lastFailureAt: event.lastFailureAt || previousStatus.lastFailureAt,
+                lastFailureReason: nextFailureReason,
+                lastFailureStatusCode: nextFailureStatusCode,
+                lastAttemptAt: event.lastAttemptAt || previousStatus.lastAttemptAt
             };
             if (endpointActiveCounts[endpointName] <= 0) {
                 delete endpointActiveCounts[endpointName];
             }
             updateRuntimeStatusSlot(endpointName);
+            updateEndpointAvailabilityIcon(endpointName);
         });
     }
 }
@@ -1760,17 +1801,9 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
         const model = ep.model || '';
         const authMode = ep.authMode || 'api_key';
 
-        // 获取测试状态
-        const testStatus = getEndpointTestStatus(ep.name);
-        let testStatusIcon = '⚠️';
-        let testStatusTip = t('endpoints.testTipUnknown');
-        if (testStatus === true) {
-            testStatusIcon = '✅';
-            testStatusTip = t('endpoints.testTipSuccess');
-        } else if (testStatus === false) {
-            testStatusIcon = '❌';
-            testStatusTip = t('endpoints.testTipFailed');
-        }
+        const availabilityDisplay = endpointAvailabilityDisplay(ep.name);
+        const testStatusIcon = availabilityDisplay.icon;
+        const testStatusTip = availabilityDisplay.title;
 
         const item = document.createElement('div');
         item.className = 'endpoint-item-compact';
@@ -1806,7 +1839,7 @@ function renderCompactView(sortedEndpoints, container, currentEndpointName, isFi
                 <div class="drag-handle-dots"><span></span><span></span></div>
                 <div class="drag-handle-dots"><span></span><span></span></div>
             </div>
-            <span class="compact-status" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
+            <span class="compact-status endpoint-availability-icon" data-name="${escapeHtml(ep.name)}" title="${testStatusTip}" style="cursor: help">${testStatusIcon}</span>
             <span class="compact-name" title="${ep.name}">${ep.name}</span>
             <span class="endpoint-default-slot compact-default-slot" data-name="${escapeHtml(ep.name)}" data-enabled="${enabled ? 'true' : 'false'}" data-view="compact">${renderCompactDefaultEndpointControl(ep.name, enabled)}</span>
             <span class="endpoint-runtime-slot compact-runtime-slot" data-name="${escapeHtml(ep.name)}">${renderEndpointRuntimeBadges(ep.name, 'compact')}</span>

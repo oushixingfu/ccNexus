@@ -236,7 +236,6 @@ export default {
 	            name: 'Only exposed model name',
 	            aliases: 'Compatible aliases, comma-separated',
 	            advertiseOnly: 'Expose only the unified model in model list',
-	            hotStandby: 'Keep all enabled endpoints in hot standby checks',
 	            preserveOverride: 'Preserve explicit endpoint routing'
 	        },
 	        failoverTitle: 'Failover Policy',
@@ -248,13 +247,13 @@ export default {
 	        },
 	        recoveredEndpointPolicy: 'Recovered Endpoint Policy',
 	        policies: {
-	            deprioritize: 'Deprioritize recovered endpoints',
 	            autoReturn: 'Auto-return to default endpoint'
-	        },
-	        cooldowns: {
-	            quotaExhausted: 'Quota exhausted cooldown (sec)',
-	            rateLimited: 'Rate limit cooldown (sec)',
-	            upstreamError: 'Upstream error cooldown (sec)',
+        },
+        cooldowns: {
+            healthCheckInterval: 'Primary recovery check interval (sec)',
+            quotaExhausted: 'Quota exhausted cooldown (sec)',
+            rateLimited: 'Rate limit cooldown (sec)',
+            upstreamError: 'Upstream error cooldown (sec)',
 	            networkError: 'Network error cooldown (sec)',
 	            tokenUnavailable: 'Token unavailable cooldown (sec)',
 	            configError: 'Config error cooldown (sec)'

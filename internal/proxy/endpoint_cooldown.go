@@ -38,6 +38,28 @@ func (p *Proxy) endpointCooldown(endpointName string) (endpointCooldown, bool) {
 	return cooldown, ok
 }
 
+func (p *Proxy) ActiveEndpointCooldownReason(endpointName string, now time.Time) string {
+	endpointName = strings.TrimSpace(endpointName)
+	if p == nil || endpointName == "" {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	p.cooldownMu.Lock()
+	defer p.cooldownMu.Unlock()
+	cooldown, ok := p.endpointCooldowns[endpointName]
+	if !ok {
+		return ""
+	}
+	if !cooldown.Until.After(now) {
+		delete(p.endpointCooldowns, endpointName)
+		return ""
+	}
+	return sanitizeLogField(cooldown.Reason)
+}
+
 func (p *Proxy) markEndpointCooldown(endpointName string, reason string, duration time.Duration, obs requestObservability, attemptNumber int) {
 	if endpointName == "" || duration <= 0 {
 		return
@@ -131,7 +153,7 @@ func endpointCooldownIdentityChanged(oldEndpoint config.Endpoint, newEndpoint co
 }
 
 func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs requestObservability) []config.Endpoint {
-	if len(endpoints) <= 1 {
+	if len(endpoints) == 0 {
 		return endpoints
 	}
 
@@ -178,11 +200,11 @@ func (p *Proxy) getRequestPlanEndpoints(endpoints []config.Endpoint, obs request
 
 	if len(available) == 0 {
 		if len(nonBlockedFallback) > 0 {
-			logger.Debug("[COOLDOWN] All non-blocked endpoints are cooled; using non-blocked endpoint list %s", requestLogFields(obs, "", 0, 0, "all_non_blocked_endpoints_cooled"))
-			return nonBlockedFallback
+			logger.Debug("[COOLDOWN] All non-blocked endpoints are cooled; request plan is empty %s", requestLogFields(obs, "", 0, 0, "all_non_blocked_endpoints_cooled"))
+			return nil
 		}
-		logger.Debug("[COOLDOWN] All enabled endpoints are cooled; using full endpoint list %s", requestLogFields(obs, "", 0, 0, "all_endpoints_cooled"))
-		return endpoints
+		logger.Debug("[COOLDOWN] All enabled endpoints are runtime-blocked; request plan is empty %s", requestLogFields(obs, "", 0, 0, "all_endpoints_runtime_blocked"))
+		return nil
 	}
 	return available
 }
@@ -212,7 +234,6 @@ func (p *Proxy) markEndpointCooldownForReason(endpointName string, reason string
 		return false
 	}
 	p.markEndpointCooldown(endpointName, reason, duration, obs, attemptNumber)
-	p.registerForHealthCheck(endpointName)
 	return true
 }
 

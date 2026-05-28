@@ -1062,8 +1062,8 @@ func TestStreamingResponseHeaderTimeoutDefaultAllowsPromptUpstreamHeaders(t *tes
 		failoverPolicyTestEndpoint("Fallback", "https://fallback.example"),
 	}, client)
 	p.streamHeartbeatInterval = time.Hour
-	if timeout := p.streamHeaderTimeoutOrDefault(); timeout != defaultStreamHeaderTimeout {
-		t.Fatalf("expected default streaming response-header timeout %s, got %s", defaultStreamHeaderTimeout, timeout)
+	if timeout := p.streamHeaderTimeoutOrDefault(); timeout != 60*time.Second {
+		t.Fatalf("expected default streaming response-header timeout 60s, got %s", timeout)
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[]}`))
@@ -1199,7 +1199,7 @@ func TestTransientNetworkErrorSingleRetryCanRecoverOnSameEndpoint(t *testing.T) 
 	}
 }
 
-func TestRequestUsesFirstSortedAvailableEndpointEvenWhenCurrentIsLower(t *testing.T) {
+func TestRequestUsesCurrentEndpointWhenItIsAvailable(t *testing.T) {
 	var hitsA int
 	var hitsB int
 	var hitsC int
@@ -1235,13 +1235,13 @@ func TestRequestUsesFirstSortedAvailableEndpointEvenWhenCurrentIsLower(t *testin
 
 	rec := issueFailoverPolicyTestRequest(p, "req-sorted-priority")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected sorted-priority request to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
+		t.Fatalf("expected current-endpoint request to succeed, got status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if hitsA != 1 || hitsB != 0 || hitsC != 0 {
-		t.Fatalf("expected only first sorted endpoint A to be used, got hits A=%d B=%d C=%d", hitsA, hitsB, hitsC)
+	if hitsA != 0 || hitsB != 0 || hitsC != 1 {
+		t.Fatalf("expected only current endpoint C to be used, got hits A=%d B=%d C=%d", hitsA, hitsB, hitsC)
 	}
-	if got := rec.Header().Get(headerCCNexusEndpoint); got != "A" {
-		t.Fatalf("expected response endpoint header A, got %q", got)
+	if got := rec.Header().Get(headerCCNexusEndpoint); got != "C" {
+		t.Fatalf("expected response endpoint header C, got %q", got)
 	}
 }
 

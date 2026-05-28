@@ -109,20 +109,19 @@ class Endpoints {
 
     renderEndpointRow(ep, index) {
         const isCurrentEndpoint = ep.name === this.currentEndpoint;
-        const testStatus = this.getTestStatus(ep.name);
         let testStatusIcon = '⚠️';
         let testStatusTitle = t('endpoints.notTested');
 
         const availability = endpointAvailability(ep);
-        if (!availability.available) {
+        if (availability.available) {
+            testStatusIcon = '✅';
+            testStatusTitle = availability.title;
+        } else if (availability.availability === 'unavailable') {
             testStatusIcon = '❌';
             testStatusTitle = endpointAvailabilityTitle(ep);
-        } else if (testStatus === true) {
-            testStatusIcon = '✅';
-            testStatusTitle = t('endpoints.testPassed');
-        } else if (testStatus === false) {
+        } else {
             testStatusIcon = '⚠️';
-            testStatusTitle = t('endpoints.testFailed');
+            testStatusTitle = availability.title;
         }
 
         return `
@@ -366,25 +365,6 @@ class Endpoints {
         });
     }
 
-    getTestStatus(endpointName) {
-        try {
-            const statusMap = JSON.parse(localStorage.getItem('ccNexus_endpointTestStatus') || '{}');
-            return statusMap[endpointName];
-        } catch {
-            return undefined;
-        }
-    }
-
-    saveTestStatus(endpointName, success) {
-        try {
-            const statusMap = JSON.parse(localStorage.getItem('ccNexus_endpointTestStatus') || '{}');
-            statusMap[endpointName] = success;
-            localStorage.setItem('ccNexus_endpointTestStatus', JSON.stringify(statusMap));
-        } catch (error) {
-            console.error('Failed to save test status:', error);
-        }
-    }
-
     showAddModal() {
         this.showEndpointModal(null);
     }
@@ -614,17 +594,14 @@ class Endpoints {
             const result = await api.testEndpoint(name);
 
             if (result.success) {
-                this.saveTestStatus(name, true);
                 notifications.success(`${t('notifications.testSuccessful')} ${result.latency}ms`);
                 this.showTestResultModal(name, result);
                 await this.loadEndpoints(); // Refresh to show test status
             } else {
-                this.saveTestStatus(name, false);
                 notifications.error(`${t('notifications.testFailed')} ${result.error}`);
                 await this.loadEndpoints(); // Refresh to show test status
             }
         } catch (error) {
-            this.saveTestStatus(name, false);
             notifications.error(`${t('endpoints.failedToTest')}: ${error.message}`);
             await this.loadEndpoints(); // Refresh to show test status
         }

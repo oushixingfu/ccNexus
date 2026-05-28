@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultHealthCheckInterval = 60 * time.Second
+	defaultHealthCheckInterval = 30 * time.Second
 	healthCheckReadLimitBytes  = 256 * 1024
 	healthCheckPrompt          = "Reply with exactly: pong"
 	healthCheckMaxTokens       = 128
@@ -37,6 +37,10 @@ type healthCheckResult struct {
 // registerForHealthCheck adds an endpoint to the periodic health check watch set.
 func (p *Proxy) registerForHealthCheck(endpointName string) {
 	if strings.TrimSpace(endpointName) == "" {
+		return
+	}
+	if !p.shouldWatchEndpointForHealthRecovery(endpointName) {
+		logger.Debug("[HEALTHCHECK] Skipped registering %s; only first-priority endpoint recovery is polled", endpointName)
 		return
 	}
 	p.healthCheckWatchedMu.Lock()
@@ -100,11 +104,6 @@ func (p *Proxy) stopHealthCheckLoop() {
 }
 
 func (p *Proxy) seedHealthCheckWatchSet() {
-	p.watchUnifiedModelHotStandbyEndpoints()
-
-	currentName := p.GetCurrentEndpointName()
-	p.watchPreferredEndpointsForAutoReturn(currentName)
-
 	if p.storage == nil {
 		return
 	}
@@ -125,7 +124,6 @@ func (p *Proxy) seedHealthCheckWatchSet() {
 					p.switchCurrentEndpointAfterFailure(*endpoint, status.LastFailureReason, requestObservability{RequestID: "healthcheck_seed"}, 0)
 				}
 			}
-			p.registerForHealthCheck(name)
 			continue
 		}
 		state := endpointstate.Derive(true, status)
@@ -170,19 +168,6 @@ func shouldRestoreDeferredCooldown(reason string, lastFailureAt time.Time, durat
 		return false
 	}
 	return lastFailureAt.Add(duration).After(time.Now())
-}
-
-func (p *Proxy) watchPreferredEndpointsForAutoReturn(currentName string) {
-	if strings.TrimSpace(currentName) == "" {
-		return
-	}
-	for _, endpoint := range p.getEnabledEndpoints() {
-		if endpoint.Name != currentName &&
-			p.shouldPreferEndpoint(endpoint.Name, currentName) &&
-			!p.hasBlockedHealthCheckRecoveryFailure(endpoint.Name) {
-			p.registerForHealthCheck(endpoint.Name)
-		}
-	}
 }
 
 func (p *Proxy) RefreshHealthCheckWatchSet() {
@@ -245,6 +230,10 @@ func (p *Proxy) runHealthCheckRound() {
 	logger.Debug("[HEALTHCHECK] Running health check round for %d endpoint(s)", len(watched))
 
 	for _, name := range watched {
+		if !p.shouldWatchEndpointForHealthRecovery(name) {
+			p.unregisterFromHealthCheck(name)
+			continue
+		}
 		endpoint := p.findEnabledEndpoint(name)
 		if endpoint == nil {
 			p.unregisterFromHealthCheck(name)
@@ -263,9 +252,7 @@ func (p *Proxy) runHealthCheckRound() {
 			status := p.recordEndpointSuccess(name)
 			p.emitEndpointRuntimeEvent(name, "success", status)
 			p.clearEndpointCooldown(name)
-			if !p.shouldKeepEndpointWatchedForHotStandby(name) {
-				p.unregisterFromHealthCheck(name)
-			}
+			p.unregisterFromHealthCheck(name)
 			logger.Info("[HEALTHCHECK] Endpoint %s recovered (status=%d), clearing cooldown", name, result.StatusCode)
 
 			// Sorted endpoint order is authoritative: once a preferred endpoint
@@ -287,28 +274,30 @@ func (p *Proxy) runHealthCheckRound() {
 	}
 }
 
-func (p *Proxy) unifiedHotStandbyEnabled() bool {
-	unified := p.unifiedModelConfig()
-	return unified.Enabled && unified.HotStandby
-}
-
-func (p *Proxy) watchUnifiedModelHotStandbyEndpoints() {
-	if !p.unifiedHotStandbyEnabled() {
-		return
-	}
-	for _, endpoint := range p.getEnabledEndpoints() {
-		if p.hasBlockedHealthCheckRecoveryFailure(endpoint.Name) {
-			continue
-		}
-		p.registerForHealthCheck(endpoint.Name)
-	}
-}
-
-func (p *Proxy) shouldKeepEndpointWatchedForHotStandby(endpointName string) bool {
-	if !p.unifiedHotStandbyEnabled() {
+func (p *Proxy) shouldWatchEndpointForHealthRecovery(endpointName string) bool {
+	endpointName = strings.TrimSpace(endpointName)
+	if endpointName == "" {
 		return false
 	}
-	return p.findEnabledEndpoint(endpointName) != nil
+	if shouldBlockHealthCheckRecoveryReason(p.runtimeBlockedReason(endpointName)) {
+		return false
+	}
+	if cooldown, ok := p.endpointCooldown(endpointName); ok && shouldBlockHealthCheckRecoveryReason(cooldown.Reason) {
+		return false
+	}
+
+	endpoints := p.getEnabledEndpoints()
+	if len(endpoints) <= 1 {
+		return false
+	}
+
+	firstName := strings.TrimSpace(endpoints[0].Name)
+	if firstName == "" || firstName != endpointName {
+		return false
+	}
+
+	currentName := strings.TrimSpace(p.GetCurrentEndpointName())
+	return currentName != "" && currentName != firstName
 }
 
 func (p *Proxy) shouldKeepRuntimeBlockAfterHealthSuccess(endpointName string) bool {

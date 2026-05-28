@@ -317,7 +317,7 @@ type FailoverCooldownConfig struct {
 type FailoverConfig struct {
 	RecoveredEndpointPolicy string                  `json:"recoveredEndpointPolicy"`
 	Cooldowns               *FailoverCooldownConfig `json:"cooldowns,omitempty"`
-	HealthCheckIntervalSec  int                     `json:"healthCheckIntervalSec,omitempty"` // Health check polling interval in seconds (default 60)
+	HealthCheckIntervalSec  int                     `json:"healthCheckIntervalSec,omitempty"` // Health check polling interval in seconds (default 30)
 }
 
 const (
@@ -382,7 +382,7 @@ func DefaultFailoverConfig() *FailoverConfig {
 			TokenUnavailableSec: 600,
 			ConfigErrorSec:      1800,
 		},
-		HealthCheckIntervalSec: 60,
+		HealthCheckIntervalSec: 30,
 	}
 }
 
@@ -395,7 +395,7 @@ func DefaultUnifiedModelConfig() *UnifiedModelConfig {
 		Aliases:                          []string{},
 		AdvertiseOnlyUnifiedModel:        true,
 		EndpointScope:                    UnifiedModelEndpointScopeAllEnabled,
-		HotStandby:                       true,
+		HotStandby:                       false,
 		PreserveExplicitEndpointOverride: true,
 	}
 }
@@ -412,7 +412,7 @@ func NormalizeUnifiedModelConfig(unified *UnifiedModelConfig) *UnifiedModelConfi
 		Name:                             strings.TrimSpace(unified.Name),
 		AdvertiseOnlyUnifiedModel:        unified.AdvertiseOnlyUnifiedModel,
 		EndpointScope:                    strings.TrimSpace(unified.EndpointScope),
-		HotStandby:                       unified.HotStandby,
+		HotStandby:                       false,
 		PreserveExplicitEndpointOverride: unified.PreserveExplicitEndpointOverride,
 	}
 	if normalized.Name == "" {
@@ -473,7 +473,7 @@ func NormalizeFailoverConfig(failover *FailoverConfig) *FailoverConfig {
 	normalized := &FailoverConfig{
 		RecoveredEndpointPolicy: strings.TrimSpace(failover.RecoveredEndpointPolicy),
 		Cooldowns:               &FailoverCooldownConfig{},
-		HealthCheckIntervalSec:  normalizeCooldownSeconds(failover.HealthCheckIntervalSec, defaults.HealthCheckIntervalSec),
+		HealthCheckIntervalSec:  normalizePositiveSeconds(failover.HealthCheckIntervalSec, defaults.HealthCheckIntervalSec),
 	}
 	if normalized.RecoveredEndpointPolicy != RecoveredEndpointPolicyAutoReturn &&
 		normalized.RecoveredEndpointPolicy != RecoveredEndpointPolicyDeprioritize {
@@ -498,6 +498,13 @@ func NormalizeFailoverConfig(failover *FailoverConfig) *FailoverConfig {
 
 func normalizeCooldownSeconds(value int, defaultValue int) int {
 	if value < 0 {
+		return defaultValue
+	}
+	return value
+}
+
+func normalizePositiveSeconds(value int, defaultValue int) int {
+	if value <= 0 {
 		return defaultValue
 	}
 	return value

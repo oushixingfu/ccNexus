@@ -1,5 +1,5 @@
 // 端点筛选功能模块
-import { getEndpointTestStatus } from './endpoints.js';
+import { getEndpointAvailabilityStatus } from './endpoints.js';
 import { t } from '../i18n/index.js';
 
 // 筛选状态（多选数组）
@@ -236,7 +236,7 @@ export function filterEndpoints(endpoints) {
 
         // 2. 可用性筛选（维度内 OR）
         if (availabilities.length > 0) {
-            const testStatus = getEndpointTestStatus(ep.name);
+            const testStatus = getEndpointAvailabilityStatus(ep.name);
             let matchesAvailability = false;
 
             for (const av of availabilities) {

@@ -34,6 +34,22 @@ func newRequestEndpointPlanForCurrent(available []config.Endpoint, allEnabled []
 	return newRequestEndpointPlanForCurrentWithSkip(available, allEnabled, currentName, false)
 }
 
+func (p *Proxy) newRequestEndpointPlanForRequest(available []config.Endpoint, routingPreference string) *requestEndpointPlan {
+	currentName := ""
+	if p != nil {
+		currentName = strings.TrimSpace(p.GetCurrentEndpointName())
+	}
+	if strings.TrimSpace(routingPreference) != routingPreferenceNone {
+		currentEndpoint, ok := findEndpointByName(available, currentName)
+		if !ok || !endpointMatchesRoutingPreference(currentEndpoint, routingPreference) {
+			currentName = ""
+		}
+	}
+
+	skipCurrent := p != nil && p.isEndpointDeprioritized(currentName)
+	return newRequestEndpointPlanForCurrentWithSkip(available, available, currentName, skipCurrent)
+}
+
 func newRequestEndpointPlanForCurrentWithSkip(available []config.Endpoint, allEnabled []config.Endpoint, currentName string, skipCurrent bool) *requestEndpointPlan {
 	if len(available) == 0 {
 		return newRequestEndpointPlan(available, 0)
@@ -108,6 +124,31 @@ func (p *requestEndpointPlan) Advance() config.Endpoint {
 	return p.Current()
 }
 
+func (p *requestEndpointPlan) Remove(name string) config.Endpoint {
+	name = strings.TrimSpace(name)
+	if p == nil || name == "" || len(p.endpoints) == 0 {
+		return config.Endpoint{}
+	}
+
+	removeIndex := indexEndpointByName(p.endpoints, name)
+	if removeIndex < 0 {
+		return p.Current()
+	}
+
+	p.endpoints = append(p.endpoints[:removeIndex], p.endpoints[removeIndex+1:]...)
+	if len(p.endpoints) == 0 {
+		p.index = 0
+		return config.Endpoint{}
+	}
+	if removeIndex < p.index {
+		p.index--
+	}
+	if p.index >= len(p.endpoints) {
+		p.index = 0
+	}
+	return p.Current()
+}
+
 func (p *requestEndpointPlan) Len() int {
 	if p == nil {
 		return 0
@@ -136,6 +177,23 @@ func (p *Proxy) advanceRequestEndpoint(plan *requestEndpointPlan, from config.En
 
 	to := plan.Advance()
 	if strings.TrimSpace(from.Name) != "" && from.Name != to.Name {
+		logger.Debug("[FAILOVER] %s → %s %s failover_scope=request_local failover_reason=%s",
+			from.Name,
+			to.Name,
+			requestLogFields(obs, from.Name, attemptNumber, 0, reason),
+			sanitizeLogField(reason),
+		)
+	}
+	return to
+}
+
+func (p *Proxy) removeRequestEndpoint(plan *requestEndpointPlan, from config.Endpoint, obs requestObservability, attemptNumber int, reason string) config.Endpoint {
+	if plan == nil || plan.Len() == 0 {
+		return config.Endpoint{}
+	}
+
+	to := plan.Remove(from.Name)
+	if strings.TrimSpace(from.Name) != "" && to.Name != "" && from.Name != to.Name {
 		logger.Debug("[FAILOVER] %s → %s %s failover_scope=request_local failover_reason=%s",
 			from.Name,
 			to.Name,

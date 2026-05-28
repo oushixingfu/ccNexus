@@ -69,7 +69,7 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) buildRealtimeEventPayload(now time.Time) (map[string]interface{}, error) {
-	items, tokenPools, err := h.loadEndpointListPayload()
+	items, tokenPools, err := h.loadEndpointListPayload(now)
 	if err != nil {
 		return nil, err
 	}

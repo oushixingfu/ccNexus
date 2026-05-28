@@ -161,6 +161,30 @@ func (p *Proxy) enqueueModelVerification(modelID string, endpoints []config.Endp
 	}
 }
 
+func (p *Proxy) autoModelVerificationEndpoints(candidates []config.Endpoint) []config.Endpoint {
+	if p == nil || p.config == nil || len(candidates) == 0 {
+		return nil
+	}
+
+	primaryName := ""
+	for _, endpoint := range p.config.GetEndpoints() {
+		if endpoint.Enabled && strings.TrimSpace(endpoint.Name) != "" {
+			primaryName = endpoint.Name
+			break
+		}
+	}
+	if primaryName == "" {
+		return nil
+	}
+
+	for _, endpoint := range candidates {
+		if endpoint.Enabled && endpoint.Name == primaryName {
+			return []config.Endpoint{endpoint}
+		}
+	}
+	return nil
+}
+
 func (p *Proxy) QueueModelVerification(endpointName string, modelID string) bool {
 	if p == nil || p.config == nil || p.modelRegistry == nil || p.modelVerifier == nil {
 		return false

@@ -126,7 +126,7 @@ func TestConfigIdentityChangeClearsOnlyChangedEndpointCooldown(t *testing.T) {
 	}
 }
 
-func TestRequestPlanStartsAtFirstSortedAvailableEndpoint(t *testing.T) {
+func TestRequestPlanStartsAtCurrentEndpointWhenAvailable(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
@@ -140,16 +140,16 @@ func TestRequestPlanStartsAtFirstSortedAvailableEndpoint(t *testing.T) {
 	}
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan"})
-	plan := newRequestEndpointPlan(available, 0)
-	if got := plan.Current().Name; got != "A" {
-		t.Fatalf("expected request plan to start at first sorted endpoint A, got %q", got)
+	plan := p.newRequestEndpointPlanForRequest(available, routingPreferenceNone)
+	if got := plan.Current().Name; got != "C" {
+		t.Fatalf("expected request plan to start at current endpoint C, got %q", got)
 	}
-	if got := plan.Advance().Name; got != "B" {
-		t.Fatalf("expected sorted failover from A to B, got %q", got)
+	if got := plan.Advance().Name; got != "A" {
+		t.Fatalf("expected failover from C to A, got %q", got)
 	}
 }
 
-func TestRequestPlanStartsAtFirstSortedAvailableEndpointWhenPreferredIsCooled(t *testing.T) {
+func TestRequestPlanStartsAtCurrentEndpointWhenEarlierEndpointIsCooled(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
@@ -164,16 +164,16 @@ func TestRequestPlanStartsAtFirstSortedAvailableEndpointWhenPreferredIsCooled(t 
 	p.markEndpointCooldown("A", "quota_exhausted", 10*time.Minute, requestObservability{RequestID: "req-plan-current-cooled"}, 1)
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-current-cooled"})
-	plan := newRequestEndpointPlan(available, 0)
-	if got := plan.Current().Name; got != "B" {
-		t.Fatalf("expected request plan to start at first available sorted endpoint B when A is cooled, got %q", got)
+	plan := p.newRequestEndpointPlanForRequest(available, routingPreferenceNone)
+	if got := plan.Current().Name; got != "C" {
+		t.Fatalf("expected request plan to start at current endpoint C when A is cooled, got %q", got)
 	}
-	if got := plan.Advance().Name; got != "C" {
-		t.Fatalf("expected sorted failover from B to C, got %q", got)
+	if got := plan.Advance().Name; got != "B" {
+		t.Fatalf("expected failover from C to B when A is cooled, got %q", got)
 	}
 }
 
-func TestRequestPlanReturnsRecoveredSortedEndpointToFront(t *testing.T) {
+func TestRequestPlanKeepsCurrentEndpointAfterRecoveredSortedEndpointReturns(t *testing.T) {
 	endpoints := []config.Endpoint{
 		failoverPolicyTestEndpoint("A", "https://a.example"),
 		failoverPolicyTestEndpoint("B", "https://b.example"),
@@ -191,12 +191,15 @@ func TestRequestPlanReturnsRecoveredSortedEndpointToFront(t *testing.T) {
 	p.cooldownMu.Unlock()
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-recovered"})
-	plan := newRequestEndpointPlan(available, 0)
-	if got := plan.Current().Name; got != "A" {
-		t.Fatalf("expected recovered first sorted endpoint A to return to front, got %q", got)
+	if len(available) == 0 || available[0].Name != "A" {
+		t.Fatalf("expected recovered first sorted endpoint A to return to available list front, got %#v", available)
 	}
-	if got := plan.Advance().Name; got != "B" {
-		t.Fatalf("expected sorted failover from A to B, got %q", got)
+	plan := p.newRequestEndpointPlanForRequest(available, routingPreferenceNone)
+	if got := plan.Current().Name; got != "C" {
+		t.Fatalf("expected request plan to keep current endpoint C after recovered A returns, got %q", got)
+	}
+	if got := plan.Advance().Name; got != "A" {
+		t.Fatalf("expected failover from C to recovered A, got %q", got)
 	}
 }
 
@@ -215,7 +218,7 @@ func TestRequestPlanTreatsLegacyDeprioritizeAsSortedRecovery(t *testing.T) {
 	p.cooldownMu.Unlock()
 
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-auto-return"})
-	plan := newRequestEndpointPlan(available, 0)
+	plan := p.newRequestEndpointPlanForRequest(available, routingPreferenceNone)
 	if got := plan.Current().Name; got != "A" {
 		t.Fatalf("expected legacy deprioritize policy not to keep recovered A behind B, got %q", got)
 	}
@@ -253,6 +256,74 @@ func TestRequestPlanSkipsRuntimeBlockedQuotaEndpoint(t *testing.T) {
 	}
 	if got := plan.Advance().Name; got != "B" {
 		t.Fatalf("expected blocked A to stay out of the request plan, got %q", got)
+	}
+}
+
+func TestRequestPlanReturnsEmptyWhenAllEndpointsRuntimeBlocked(t *testing.T) {
+	endpoints := []config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints(endpoints)
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+	p.setRuntimeBlockedEndpoint("A", "quota_exhausted")
+	p.setRuntimeBlockedEndpoint("B", "quota_exhausted")
+
+	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-all-runtime-blocked"})
+	if len(available) != 0 {
+		t.Fatalf("expected all runtime-blocked endpoints to stay out of request plan, got %#v", available)
+	}
+}
+
+func TestRequestPlanReturnsEmptyForSingleRuntimeBlockedEndpoint(t *testing.T) {
+	endpoints := []config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+	}
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints(endpoints)
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+	p.setRuntimeBlockedEndpoint("A", "quota_exhausted")
+
+	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-single-runtime-blocked"})
+	if len(available) != 0 {
+		t.Fatalf("expected single runtime-blocked endpoint to stay out of request plan, got %#v", available)
+	}
+}
+
+func TestRequestPlanReturnsEmptyWhenAllEndpointsCooled(t *testing.T) {
+	endpoints := []config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints(endpoints)
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+	p.markEndpointCooldown("A", "rate_limited", 10*time.Minute, requestObservability{RequestID: "req-plan-all-cooled-a"}, 1)
+	p.markEndpointCooldown("B", "upstream_5xx", 10*time.Minute, requestObservability{RequestID: "req-plan-all-cooled-b"}, 1)
+
+	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-all-cooled"})
+	if len(available) != 0 {
+		t.Fatalf("expected all cooled endpoints to stay out of request plan, got %#v", available)
+	}
+}
+
+func TestRequestPlanReturnsEmptyForSingleCooledEndpoint(t *testing.T) {
+	endpoints := []config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+	}
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints(endpoints)
+	p := New(cfg, &noopStatsStorage{}, nil, "test-device")
+
+	p.markEndpointCooldown("A", "rate_limited", 10*time.Minute, requestObservability{RequestID: "req-plan-single-cooled"}, 1)
+
+	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "req-plan-single-cooled"})
+	if len(available) != 0 {
+		t.Fatalf("expected single cooled endpoint to stay out of request plan, got %#v", available)
 	}
 }
 

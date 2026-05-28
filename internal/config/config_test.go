@@ -96,6 +96,27 @@ func TestLoadFromStorageUsesDefaultFailover(t *testing.T) {
 	}
 }
 
+func TestDefaultUnifiedModelDisablesHotStandby(t *testing.T) {
+	unified := DefaultUnifiedModelConfig()
+	if unified.HotStandby {
+		t.Fatal("expected default unified model hot standby to be disabled")
+	}
+}
+
+func TestNormalizeUnifiedModelDisablesHotStandby(t *testing.T) {
+	unified := NormalizeUnifiedModelConfig(&UnifiedModelConfig{
+		Enabled:                          true,
+		Name:                             "gpt-auto",
+		AdvertiseOnlyUnifiedModel:        true,
+		EndpointScope:                    UnifiedModelEndpointScopeAllEnabled,
+		HotStandby:                       true,
+		PreserveExplicitEndpointOverride: true,
+	})
+	if unified.HotStandby {
+		t.Fatal("expected normalized unified model hot standby to be disabled")
+	}
+}
+
 func TestRoutingStrategyPersistsAndNormalizes(t *testing.T) {
 	store := newFakeConfigStorage()
 	cfg := DefaultConfig()
@@ -129,6 +150,7 @@ func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 	cfg.UpdateEndpoints(nil)
 	cfg.UpdateFailover(&FailoverConfig{
 		RecoveredEndpointPolicy: RecoveredEndpointPolicyAutoReturn,
+		HealthCheckIntervalSec:  15,
 		Cooldowns: &FailoverCooldownConfig{
 			QuotaExhaustedSec:   0,
 			RateLimitedSec:      7,
@@ -150,6 +172,9 @@ func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 	if failover.RecoveredEndpointPolicy != RecoveredEndpointPolicyAutoReturn {
 		t.Fatalf("expected persisted policy auto_return, got %q", failover.RecoveredEndpointPolicy)
 	}
+	if failover.HealthCheckIntervalSec != 15 {
+		t.Fatalf("expected persisted health check interval 15, got %d", failover.HealthCheckIntervalSec)
+	}
 	if failover.Cooldowns.QuotaExhaustedSec != 0 ||
 		failover.Cooldowns.RateLimitedSec != 7 ||
 		failover.Cooldowns.UpstreamErrorSec != 8 ||
@@ -161,6 +186,7 @@ func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 
 	cfg.UpdateFailover(&FailoverConfig{
 		RecoveredEndpointPolicy: "bad-policy",
+		HealthCheckIntervalSec:  0,
 		Cooldowns: &FailoverCooldownConfig{
 			QuotaExhaustedSec: -1,
 		},
@@ -171,6 +197,9 @@ func TestFailoverConfigPersistsAndNormalizes(t *testing.T) {
 	}
 	if failover.Cooldowns.QuotaExhaustedSec != 3600 {
 		t.Fatalf("expected negative cooldown to normalize to default, got %d", failover.Cooldowns.QuotaExhaustedSec)
+	}
+	if failover.HealthCheckIntervalSec != 30 {
+		t.Fatalf("expected non-positive health check interval to normalize to default, got %d", failover.HealthCheckIntervalSec)
 	}
 }
 
@@ -223,6 +252,9 @@ func TestUnifiedModelConfigPersistsAndMatchesAliases(t *testing.T) {
 	if len(unified.Aliases) != 1 || unified.Aliases[0] != "gpt-5.5" {
 		t.Fatalf("expected duplicate/self aliases to be normalized, got %#v", unified.Aliases)
 	}
+	if unified.HotStandby {
+		t.Fatal("expected saved legacy hot standby=true to normalize to disabled")
+	}
 	if !UnifiedModelMatches(unified, "GPT-5.5") || !UnifiedModelMatches(unified, "gpt-auto") {
 		t.Fatalf("expected unified model name and aliases to match")
 	}
@@ -256,5 +288,8 @@ func TestReplaceFromUpdatesConfigWithoutCopyingLock(t *testing.T) {
 	}
 	if unified := current.GetUnifiedModel(); !unified.Enabled || unified.Name != "gpt-auto" {
 		t.Fatalf("expected replaced unified model config, got %#v", unified)
+	}
+	if unified := current.GetUnifiedModel(); unified.HotStandby {
+		t.Fatal("expected replaced unified model hot standby to normalize to disabled")
 	}
 }

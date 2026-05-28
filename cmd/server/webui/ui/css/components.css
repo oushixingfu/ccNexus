@@ -145,6 +145,10 @@
     background-color: var(--danger-color);
 }
 
+.status-indicator.unknown {
+    background-color: var(--warning-color);
+}
+
 /* Modals */
 .modal-overlay {
     position: fixed;

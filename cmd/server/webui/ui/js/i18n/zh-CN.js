@@ -236,7 +236,6 @@ export default {
 	            name: '唯一暴露模型名称',
 	            aliases: '兼容别名（逗号分隔）',
 	            advertiseOnly: '模型列表只暴露统一模型',
-	            hotStandby: '所有启用端点保持热备检查',
 	            preserveOverride: '显式指定端点时保留原端点路由'
 	        },
 	        failoverTitle: '故障转移策略',
@@ -248,13 +247,13 @@ export default {
 	        },
 	        recoveredEndpointPolicy: '恢复端点策略',
 	        policies: {
-	            deprioritize: '首选降权',
-	            autoReturn: '自动回切旧行为'
-	        },
-	        cooldowns: {
-	            quotaExhausted: '额度不足冷却（秒）',
-	            rateLimited: '限流冷却（秒）',
-	            upstreamError: '上游错误冷却（秒）',
+	            autoReturn: '主端点恢复后自动回切'
+        },
+        cooldowns: {
+            healthCheckInterval: '主端点恢复检查间隔（秒）',
+            quotaExhausted: '额度不足冷却（秒）',
+            rateLimited: '限流冷却（秒）',
+            upstreamError: '上游错误冷却（秒）',
 	            networkError: '网络错误冷却（秒）',
 	            tokenUnavailable: 'Token 不可用冷却（秒）',
 	            configError: '配置错误冷却（秒）'

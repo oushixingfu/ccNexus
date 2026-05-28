@@ -71,6 +71,86 @@ func TestRealtimeEventPayloadIncludesEndpointAvailability(t *testing.T) {
 	}
 }
 
+func TestRealtimeEventPayloadMarksUntestedEndpointUnknown(t *testing.T) {
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:        "Backup",
+		APIUrl:      "https://api.example.com",
+		APIKey:      "sk-test",
+		AuthMode:    config.AuthModeAPIKey,
+		Enabled:     true,
+		Transformer: "openai",
+		Model:       "gpt-5.5",
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	p := proxypkg.New(cfg, noopStatsStorage{}, store, "test-device")
+	handler := NewHandler(cfg, p, store)
+
+	payload, err := handler.buildRealtimeEventPayload(time.Unix(123, 0))
+	if err != nil {
+		t.Fatalf("build realtime event payload: %v", err)
+	}
+	endpoints, ok := payload["endpoints"].([]endpointResponse)
+	if !ok || len(endpoints) != 1 {
+		t.Fatalf("expected one endpoint response in realtime payload, got %#v", payload["endpoints"])
+	}
+	endpoint := endpoints[0]
+	if endpoint.Available || endpoint.Availability != "unknown" || endpoint.AvailabilityReason != "" || endpoint.AvailabilityStatusCode != 0 {
+		t.Fatalf("expected untested endpoint to be unknown, got %#v", endpoint)
+	}
+}
+
+func TestRealtimeEventPayloadMarksInactiveTransientFailureUnknown(t *testing.T) {
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:        "Primary",
+		APIUrl:      "https://api.example.com",
+		APIKey:      "sk-test",
+		AuthMode:    config.AuthModeAPIKey,
+		Enabled:     true,
+		Transformer: "openai",
+		Model:       "gpt-5.5",
+	}); err != nil {
+		t.Fatalf("save endpoint: %v", err)
+	}
+	failureAt := time.Now().Add(-time.Minute).UTC()
+	failureReason := "upstream_5xx"
+	failureStatus := http.StatusBadGateway
+	if _, err := store.UpsertEndpointRuntimeStatus("Primary", storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:         &failureAt,
+		LastFailureReason:     &failureReason,
+		LastFailureStatusCode: &failureStatus,
+	}); err != nil {
+		t.Fatalf("seed runtime status: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.BasicAuthEnabled = false
+	p := proxypkg.New(cfg, noopStatsStorage{}, store, "test-device")
+	handler := NewHandler(cfg, p, store)
+
+	payload, err := handler.buildRealtimeEventPayload(time.Now().UTC())
+	if err != nil {
+		t.Fatalf("build realtime event payload: %v", err)
+	}
+	endpoints, ok := payload["endpoints"].([]endpointResponse)
+	if !ok || len(endpoints) != 1 {
+		t.Fatalf("expected one endpoint response in realtime payload, got %#v", payload["endpoints"])
+	}
+	endpoint := endpoints[0]
+	if endpoint.Available || endpoint.Availability != "unknown" || endpoint.AvailabilityReason != "" || endpoint.AvailabilityStatusCode != 0 {
+		t.Fatalf("expected inactive transient failure to be unknown, got %#v", endpoint)
+	}
+}
+
 func TestBuildEndpointResponseIncludesEffectiveUpstreams(t *testing.T) {
 	endpoint := storage.Endpoint{
 		Name:                    "gateway",

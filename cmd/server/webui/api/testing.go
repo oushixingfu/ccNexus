@@ -516,8 +516,12 @@ func (h *Handler) recordEndpointTestFailure(endpointName string, err error) {
 	}
 
 	now := time.Now().UTC()
-	reason := err.Error()
+	reason := endpointTestFailureReason(err)
 	statusCode := endpointTestHTTPStatusCode(err)
+	if h.proxy != nil {
+		h.proxy.MarkEndpointUnavailable(endpointName, reason, statusCode)
+		return
+	}
 	if _, upsertErr := h.storage.UpsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
 		LastFailureAt:         &now,
 		LastFailureReason:     &reason,
@@ -534,6 +538,42 @@ func endpointTestHTTPStatusCode(err error) int {
 		return httpErr.statusCode
 	}
 	return 0
+}
+
+func endpointTestFailureReason(err error) string {
+	if err == nil {
+		return "send_request_failed"
+	}
+
+	var httpErr *endpointTestHTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.statusCode == http.StatusUnauthorized {
+			return "endpoint_auth_failed"
+		}
+		return proxy.ClassifyHTTPFailureReason(httpErr.statusCode, httpErr.body)
+	}
+
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(message, "apikey is empty"):
+		return "empty_api_key"
+	case strings.Contains(message, "no usable token"):
+		return "no_usable_token"
+	case strings.Contains(message, "failed to get token from pool"):
+		return "credential_select_failed"
+	case strings.Contains(message, "api returned no usable output"):
+		return "semantic_empty_response"
+	case strings.Contains(message, "failed to read response"):
+		return "upstream_stream_error"
+	case strings.Contains(message, "request failed"):
+		return "send_request_failed"
+	case strings.Contains(message, "unsupported transformer"),
+		strings.Contains(message, "failed to marshal request"),
+		strings.Contains(message, "failed to create request"):
+		return "build_request_failed"
+	default:
+		return "send_request_failed"
+	}
 }
 
 func (h *Handler) persistEndpointTestProtocolSuccess(endpointName, transformer string) {

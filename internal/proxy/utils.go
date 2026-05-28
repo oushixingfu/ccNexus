@@ -36,7 +36,7 @@ const (
 	endpointSlowFailoverAttempts  = 3
 	semanticEmptyFailoverAttempts = 5
 
-	defaultStreamHeaderTimeout     = 20 * time.Second
+	defaultStreamHeaderTimeout     = 60 * time.Second
 	defaultStreamHeartbeatInterval = 10 * time.Second
 	retryReasonEndpointAuthFailed  = "endpoint_auth_failed"
 	retryReasonEndpointCapability  = "endpoint_capability_mismatch"
@@ -137,6 +137,12 @@ func retryReasonForHTTPStatus(statusCode int, body string) string {
 		return "upstream_5xx"
 	}
 	return "retryable_status"
+}
+
+// ClassifyHTTPFailureReason exposes the proxy's HTTP failure policy to callers
+// that validate endpoints outside the normal request path.
+func ClassifyHTTPFailureReason(statusCode int, body string) string {
+	return retryReasonForHTTPStatus(statusCode, body)
 }
 
 func shouldRetryWithForcedStream(statusCode int, body string, clientRequestedStream bool, transformerName string) bool {

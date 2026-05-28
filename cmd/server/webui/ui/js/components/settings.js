@@ -4,7 +4,8 @@ import { notifications } from '../utils/notifications.js';
 import { t } from '../utils/i18n.js';
 
 const defaultFailover = {
-    recoveredEndpointPolicy: 'deprioritize',
+    recoveredEndpointPolicy: 'auto_return',
+    healthCheckIntervalSec: 30,
     cooldowns: {
         quotaExhaustedSec: 3600,
         rateLimitedSec: 120,
@@ -21,7 +22,7 @@ const defaultUnifiedModel = {
     aliases: [],
     advertiseOnlyUnifiedModel: true,
     endpointScope: 'all_enabled',
-    hotStandby: true,
+    hotStandby: false,
     preserveExplicitEndpointOverride: true
 };
 
@@ -64,10 +65,6 @@ class Settings {
                                 <span>${t('settings.unifiedModel.advertiseOnly')}</span>
                             </label>
                             <label class="checkbox-row">
-                                <input type="checkbox" class="form-checkbox" name="unifiedModelHotStandby">
-                                <span>${t('settings.unifiedModel.hotStandby')}</span>
-                            </label>
-                            <label class="checkbox-row">
                                 <input type="checkbox" class="form-checkbox" name="unifiedModelPreserveOverride">
                                 <span>${t('settings.unifiedModel.preserveOverride')}</span>
                             </label>
@@ -90,10 +87,10 @@ class Settings {
                             <div class="form-group">
                                 <label class="form-label">${t('settings.recoveredEndpointPolicy')}</label>
                                 <select class="form-select" name="recoveredEndpointPolicy">
-                                    <option value="deprioritize">${t('settings.policies.deprioritize')}</option>
                                     <option value="auto_return">${t('settings.policies.autoReturn')}</option>
                                 </select>
                             </div>
+                            ${this.renderCooldownInput('healthCheckIntervalSec', t('settings.cooldowns.healthCheckInterval'))}
                             <div class="grid grid-cols-2">
                                 ${this.renderCooldownInput('quotaExhaustedSec', t('settings.cooldowns.quotaExhausted'))}
                                 ${this.renderCooldownInput('rateLimitedSec', t('settings.cooldowns.rateLimited'))}
@@ -132,10 +129,10 @@ class Settings {
             form.elements.unifiedModelName.value = unifiedModel.name;
             form.elements.unifiedModelAliases.value = unifiedModel.aliases.join(', ');
             form.elements.unifiedModelAdvertiseOnly.checked = unifiedModel.advertiseOnlyUnifiedModel;
-            form.elements.unifiedModelHotStandby.checked = unifiedModel.hotStandby;
             form.elements.unifiedModelPreserveOverride.checked = unifiedModel.preserveExplicitEndpointOverride;
             form.elements.routingStrategy.value = this.normalizeRoutingStrategy(config.routingStrategy);
             form.elements.recoveredEndpointPolicy.value = failover.recoveredEndpointPolicy;
+            form.elements.healthCheckIntervalSec.value = failover.healthCheckIntervalSec;
             Object.entries(failover.cooldowns).forEach(([key, value]) => {
                 if (form.elements[key]) {
                     form.elements[key].value = value;
@@ -163,12 +160,13 @@ class Settings {
                     aliases: this.parseAliases(form.elements.unifiedModelAliases.value, unifiedModelName),
                     advertiseOnlyUnifiedModel: form.elements.unifiedModelAdvertiseOnly.checked,
                     endpointScope: defaultUnifiedModel.endpointScope,
-                    hotStandby: form.elements.unifiedModelHotStandby.checked,
+                    hotStandby: false,
                     preserveExplicitEndpointOverride: form.elements.unifiedModelPreserveOverride.checked
                 },
                 routingStrategy: this.normalizeRoutingStrategy(form.elements.routingStrategy.value),
                 failover: {
                     recoveredEndpointPolicy: form.elements.recoveredEndpointPolicy.value,
+                    healthCheckIntervalSec: readSeconds('healthCheckIntervalSec'),
                     cooldowns: {
                         quotaExhaustedSec: readSeconds('quotaExhaustedSec'),
                         rateLimitedSec: readSeconds('rateLimitedSec'),
@@ -194,7 +192,6 @@ class Settings {
             aliases: aliases.filter((alias) => typeof alias === 'string' && alias.trim()).map((alias) => alias.trim()),
             advertiseOnlyUnifiedModel: unifiedModel?.advertiseOnlyUnifiedModel !== false,
             endpointScope: unifiedModel?.endpointScope || defaultUnifiedModel.endpointScope,
-            hotStandby: unifiedModel?.hotStandby !== false,
             preserveExplicitEndpointOverride: unifiedModel?.preserveExplicitEndpointOverride !== false
         };
     }
@@ -216,8 +213,13 @@ class Settings {
 
     normalizeFailover(failover) {
         const cooldowns = failover?.cooldowns || {};
+        const healthCheckIntervalSec = Number(failover?.healthCheckIntervalSec);
+        const recoveredEndpointPolicy = failover?.recoveredEndpointPolicy === 'deprioritize'
+            ? defaultFailover.recoveredEndpointPolicy
+            : failover?.recoveredEndpointPolicy || defaultFailover.recoveredEndpointPolicy;
         return {
-            recoveredEndpointPolicy: failover?.recoveredEndpointPolicy || defaultFailover.recoveredEndpointPolicy,
+            recoveredEndpointPolicy,
+            healthCheckIntervalSec: Number.isFinite(healthCheckIntervalSec) && healthCheckIntervalSec > 0 ? healthCheckIntervalSec : defaultFailover.healthCheckIntervalSec,
             cooldowns: {
                 quotaExhaustedSec: Number.isFinite(Number(cooldowns.quotaExhaustedSec)) ? Number(cooldowns.quotaExhaustedSec) : defaultFailover.cooldowns.quotaExhaustedSec,
                 rateLimitedSec: Number.isFinite(Number(cooldowns.rateLimitedSec)) ? Number(cooldowns.rateLimitedSec) : defaultFailover.cooldowns.rateLimitedSec,

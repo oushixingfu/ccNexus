@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -716,7 +717,7 @@ func (e *EndpointService) SwitchToEndpoint(endpointName string) error {
 }
 
 // TestEndpoint tests an endpoint by sending a simple request
-func (e *EndpointService) TestEndpoint(index int) string {
+func (e *EndpointService) TestEndpoint(index int) (resultJSON string) {
 	endpoints := e.config.GetEndpoints()
 
 	if index < 0 || index >= len(endpoints) {
@@ -729,6 +730,9 @@ func (e *EndpointService) TestEndpoint(index int) string {
 	}
 
 	endpoint := endpoints[index]
+	defer func() {
+		e.recordManualEndpointTestResult(endpoint.Name, resultJSON)
+	}()
 	logger.Info("Testing endpoint: %s (%s)", endpoint.Name, endpoint.APIUrl)
 
 	apiKey, credential, authErr := e.resolveEndpointAuth(endpoint)
@@ -985,7 +989,7 @@ func (e *EndpointService) TestEndpoint(index int) string {
 // will be added in the next part due to size constraints
 
 // TestEndpointLight tests endpoint availability with minimal token consumption
-func (e *EndpointService) TestEndpointLight(index int) string {
+func (e *EndpointService) TestEndpointLight(index int) (resultJSON string) {
 	endpoints := e.config.GetEndpoints()
 
 	if index < 0 || index >= len(endpoints) {
@@ -993,6 +997,9 @@ func (e *EndpointService) TestEndpointLight(index int) string {
 	}
 
 	endpoint := endpoints[index]
+	defer func() {
+		e.recordManualEndpointTestResult(endpoint.Name, resultJSON)
+	}()
 	logger.Info("Testing endpoint (light): %s (%s)", endpoint.Name, endpoint.APIUrl)
 
 	apiKey, credential, err := e.resolveEndpointAuth(endpoint)
@@ -1103,6 +1110,95 @@ func (e *EndpointService) testResult(success bool, status, method, message strin
 	return string(data)
 }
 
+func (e *EndpointService) recordManualEndpointTestResult(endpointName, resultJSON string) {
+	if e == nil || e.proxy == nil || strings.TrimSpace(endpointName) == "" || strings.TrimSpace(resultJSON) == "" {
+		return
+	}
+
+	var result struct {
+		Success bool   `json:"success"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		logger.Warn("Failed to parse endpoint test result for %s: %v", endpointName, err)
+		return
+	}
+
+	if result.Success {
+		e.proxy.MarkEndpointAvailable(endpointName)
+		return
+	}
+
+	reason := endpointServiceTestFailureReason(result.Status, result.Message)
+	statusCode := endpointServiceTestHTTPStatusCode(result.Message)
+	e.proxy.MarkEndpointUnavailable(endpointName, reason, statusCode)
+}
+
+func endpointServiceTestFailureReason(status, message string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	message = strings.ToLower(strings.TrimSpace(message))
+	if statusCode := endpointServiceTestHTTPStatusCode(message); statusCode > 0 {
+		if statusCode == http.StatusUnauthorized {
+			return "endpoint_auth_failed"
+		}
+		return proxy.ClassifyHTTPFailureReason(statusCode, message)
+	}
+
+	switch status {
+	case "invalid_key":
+		return "endpoint_auth_failed"
+	case "invalid_index":
+		return "build_request_failed"
+	}
+
+	switch {
+	case strings.Contains(message, "apikey is empty") || strings.Contains(message, "api key is empty"):
+		return "empty_api_key"
+	case strings.Contains(message, "no usable token"):
+		return "no_usable_token"
+	case strings.Contains(message, "authentication unavailable") || strings.Contains(message, "authentication failed"):
+		return "endpoint_auth_failed"
+	case strings.Contains(message, "no usable output"):
+		return "semantic_empty_response"
+	case strings.Contains(message, "failed to read response") || strings.Contains(message, "unexpected eof"):
+		return "upstream_stream_error"
+	case strings.Contains(message, "unsupported transformer") ||
+		strings.Contains(message, "failed to marshal request") ||
+		strings.Contains(message, "failed to create request"):
+		return "build_request_failed"
+	default:
+		return "send_request_failed"
+	}
+}
+
+func endpointServiceTestHTTPStatusCode(message string) int {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if message == "" {
+		return 0
+	}
+
+	for _, marker := range []string{"http ", "status "} {
+		idx := strings.Index(message, marker)
+		if idx < 0 {
+			continue
+		}
+		start := idx + len(marker)
+		end := start
+		for end < len(message) && message[end] >= '0' && message[end] <= '9' {
+			end++
+		}
+		if end == start {
+			continue
+		}
+		statusCode, err := strconv.Atoi(message[start:end])
+		if err == nil {
+			return statusCode
+		}
+	}
+	return 0
+}
+
 // TestAllEndpointsZeroCost tests all endpoints using zero-cost methods only
 // Uses concurrent testing with limited parallelism for optimal performance
 func (e *EndpointService) TestAllEndpointsZeroCost() string {
@@ -1126,6 +1222,7 @@ func (e *EndpointService) TestAllEndpointsZeroCost() string {
 
 			// Test the endpoint
 			status := e.testSingleEndpointZeroCost(ep)
+			e.recordManualEndpointTestResult(ep.Name, status)
 
 			// Store result
 			mu.Lock()

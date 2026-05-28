@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	"github.com/lich0821/ccNexus/internal/endpointstate"
 	"github.com/lich0821/ccNexus/internal/logger"
 	"github.com/lich0821/ccNexus/internal/proxy"
 	"github.com/lich0821/ccNexus/internal/service"
@@ -55,6 +56,20 @@ type desktopImportCredentialItem struct {
 type desktopImportCredentialsRequest struct {
 	Items  []desktopImportCredentialItem `json:"items"`
 	Remark string                        `json:"remark"`
+}
+
+type desktopEndpointRuntimeStatus struct {
+	EndpointName           string     `json:"endpointName"`
+	LastSuccessAt          *time.Time `json:"lastSuccessAt,omitempty"`
+	LastFailureAt          *time.Time `json:"lastFailureAt,omitempty"`
+	LastFailureReason      string     `json:"lastFailureReason,omitempty"`
+	LastFailureStatusCode  int        `json:"lastFailureStatusCode"`
+	LastAttemptAt          *time.Time `json:"lastAttemptAt,omitempty"`
+	UpdatedAt              *time.Time `json:"updatedAt,omitempty"`
+	Available              bool       `json:"available"`
+	Availability           string     `json:"availability"`
+	AvailabilityReason     string     `json:"availabilityReason,omitempty"`
+	AvailabilityStatusCode int        `json:"availabilityStatusCode,omitempty"`
 }
 
 // App struct
@@ -427,12 +442,68 @@ func (a *App) GetEndpointRuntimeStatuses() string {
 		logger.Warn("Failed to get endpoint runtime statuses: %v", err)
 		return "{}"
 	}
-	data, err := json.Marshal(statuses)
+	projected := a.projectEndpointRuntimeStatuses(statuses)
+	data, err := json.Marshal(projected)
 	if err != nil {
 		logger.Warn("Failed to marshal endpoint runtime statuses: %v", err)
 		return "{}"
 	}
 	return string(data)
+}
+
+func (a *App) projectEndpointRuntimeStatuses(statuses map[string]*storage.EndpointRuntimeStatus) map[string]desktopEndpointRuntimeStatus {
+	if statuses == nil {
+		statuses = map[string]*storage.EndpointRuntimeStatus{}
+	}
+
+	now := time.Now()
+	projected := make(map[string]desktopEndpointRuntimeStatus, len(statuses))
+	seen := make(map[string]struct{})
+
+	if a.config != nil {
+		for _, endpoint := range a.config.GetEndpoints() {
+			cooldownReason := ""
+			if a.proxy != nil {
+				cooldownReason = a.proxy.ActiveEndpointCooldownReason(endpoint.Name, now)
+			}
+			projected[endpoint.Name] = projectDesktopEndpointRuntimeStatus(endpoint.Name, endpoint.Enabled, statuses[endpoint.Name], cooldownReason)
+			seen[endpoint.Name] = struct{}{}
+		}
+	}
+
+	for name, status := range statuses {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		projected[name] = projectDesktopEndpointRuntimeStatus(name, true, status, "")
+	}
+
+	return projected
+}
+
+func projectDesktopEndpointRuntimeStatus(endpointName string, enabled bool, status *storage.EndpointRuntimeStatus, activeCooldownReason string) desktopEndpointRuntimeStatus {
+	state := endpointstate.DeriveWithActiveCooldown(enabled, status, activeCooldownReason)
+	projected := desktopEndpointRuntimeStatus{
+		EndpointName:           endpointName,
+		Available:              state.Available,
+		Availability:           state.Availability,
+		AvailabilityReason:     state.Reason,
+		AvailabilityStatusCode: state.StatusCode,
+	}
+	if status == nil {
+		return projected
+	}
+
+	if status.EndpointName != "" {
+		projected.EndpointName = status.EndpointName
+	}
+	projected.LastSuccessAt = status.LastSuccessAt
+	projected.LastFailureAt = status.LastFailureAt
+	projected.LastFailureReason = status.LastFailureReason
+	projected.LastFailureStatusCode = status.LastFailureStatusCode
+	projected.LastAttemptAt = status.LastAttemptAt
+	projected.UpdatedAt = &status.UpdatedAt
+	return projected
 }
 func (a *App) TestEndpoint(index int) string      { return a.endpoint.TestEndpoint(index) }
 func (a *App) TestEndpointLight(index int) string { return a.endpoint.TestEndpointLight(index) }

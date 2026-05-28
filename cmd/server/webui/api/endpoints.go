@@ -79,7 +79,7 @@ func (h *Handler) handleEndpointByName(w http.ResponseWriter, r *http.Request) {
 
 // listEndpoints returns all endpoints
 func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
-	items, tokenPools, err := h.loadEndpointListPayload()
+	items, tokenPools, err := h.loadEndpointListPayload(time.Now())
 	if err != nil {
 		logger.Error("Failed to get endpoints: %v", err)
 		WriteError(w, http.StatusInternalServerError, "Failed to get endpoints")
@@ -92,7 +92,7 @@ func (h *Handler) listEndpoints(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) loadEndpointListPayload() ([]endpointResponse, map[string]storage.TokenPoolStats, error) {
+func (h *Handler) loadEndpointListPayload(now time.Time) ([]endpointResponse, map[string]storage.TokenPoolStats, error) {
 	endpoints, err := h.storage.GetEndpoints()
 	if err != nil {
 		return nil, nil, err
@@ -107,7 +107,7 @@ func (h *Handler) loadEndpointListPayload() ([]endpointResponse, map[string]stor
 	items := make([]endpointResponse, 0, len(endpoints))
 	for i := range endpoints {
 		endpoints[i].APIKey = maskAPIKey(endpoints[i].APIKey)
-		items = append(items, buildEndpointResponse(endpoints[i], runtimeStatuses[endpoints[i].Name]))
+		items = append(items, h.buildEndpointResponse(endpoints[i], runtimeStatuses[endpoints[i].Name], now))
 	}
 
 	tokenPools, err := h.storage.GetAllTokenPoolStats()
@@ -136,7 +136,7 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 				runtimeStatuses = map[string]*storage.EndpointRuntimeStatus{}
 			}
 			ep.APIKey = maskAPIKey(ep.APIKey)
-			WriteSuccess(w, buildEndpointResponse(ep, runtimeStatuses[ep.Name]))
+			WriteSuccess(w, h.buildEndpointResponse(ep, runtimeStatuses[ep.Name], time.Now()))
 			return
 		}
 	}
@@ -144,8 +144,20 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, name strin
 	WriteError(w, http.StatusNotFound, "Endpoint not found")
 }
 
+func (h *Handler) buildEndpointResponse(endpoint storage.Endpoint, status *storage.EndpointRuntimeStatus, now time.Time) endpointResponse {
+	activeCooldownReason := ""
+	if h != nil && h.proxy != nil {
+		activeCooldownReason = h.proxy.ActiveEndpointCooldownReason(endpoint.Name, now)
+	}
+	return buildEndpointResponseWithCooldown(endpoint, status, activeCooldownReason)
+}
+
 func buildEndpointResponse(endpoint storage.Endpoint, status *storage.EndpointRuntimeStatus) endpointResponse {
-	state := endpointstate.Derive(endpoint.Enabled, status)
+	return buildEndpointResponseWithCooldown(endpoint, status, "")
+}
+
+func buildEndpointResponseWithCooldown(endpoint storage.Endpoint, status *storage.EndpointRuntimeStatus, activeCooldownReason string) endpointResponse {
+	state := endpointstate.DeriveWithActiveCooldown(endpoint.Enabled, status, activeCooldownReason)
 	effective := effectiveEndpointUpstreams(endpoint)
 	return endpointResponse{
 		Endpoint:                         endpoint,

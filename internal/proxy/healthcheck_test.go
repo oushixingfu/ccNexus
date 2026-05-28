@@ -151,7 +151,60 @@ func TestHealthCheckRecoverySwitchesBackBySortedPriority(t *testing.T) {
 	}
 }
 
-func TestRetryableRequestFailureIsHealthCheckedAndCleared(t *testing.T) {
+func TestHealthCheckRegistrationSkipsNonFirstPriorityEndpoint(t *testing.T) {
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+		failoverPolicyTestEndpoint("C", "https://c.example"),
+	}, nil)
+	if err := p.SetCurrentEndpoint("C"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+
+	p.registerForHealthCheck("B")
+
+	p.healthCheckWatchedMu.RLock()
+	_, watchedB := p.healthCheckWatched["B"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watchedB {
+		t.Fatal("expected non-first-priority endpoint B not to enter automatic health check watch set")
+	}
+}
+
+func TestRetryableRequestFailureWithoutFailoverDoesNotStartHealthCheck(t *testing.T) {
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}, nil)
+
+	status := p.recordRetryableRequestFailure("A", "transient_network_error")
+	p.emitEndpointRuntimeEvent("A", "failure", status)
+
+	p.healthCheckWatchedMu.RLock()
+	_, watched := p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watched {
+		t.Fatal("expected retryable failure without failover not to register endpoint for health check")
+	}
+}
+
+func TestHardUnavailableFailureDoesNotStartHealthCheck(t *testing.T) {
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}, nil)
+
+	p.switchCurrentEndpointAfterFailure(failoverPolicyTestEndpoint("A", "https://a.example"), "quota_exhausted", requestObservability{RequestID: "hard-block"}, 1)
+
+	p.healthCheckWatchedMu.RLock()
+	_, watched := p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watched {
+		t.Fatal("expected hard unavailable endpoint not to register for automatic health check")
+	}
+}
+
+func TestFailedOverEndpointIsHealthCheckedAndCleared(t *testing.T) {
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()
 
@@ -171,12 +224,17 @@ func TestRetryableRequestFailureIsHealthCheckedAndCleared(t *testing.T) {
 
 	status := p.recordRetryableRequestFailure("A", "transient_network_error")
 	p.emitEndpointRuntimeEvent("A", "failure", status)
+	p.markEndpointCooldownForReason("A", "transient_network_error", nil, requestObservability{RequestID: "failed-over"}, 1)
+	p.switchCurrentEndpointAfterFailure(failoverPolicyTestEndpoint("A", recovered.URL), "transient_network_error", requestObservability{RequestID: "failed-over"}, 1)
+	p.cooldownMu.Lock()
+	p.endpointCooldowns["A"] = endpointCooldown{Reason: "transient_network_error", Until: time.Now().Add(-time.Second)}
+	p.cooldownMu.Unlock()
 
 	p.healthCheckWatchedMu.RLock()
 	_, watched := p.healthCheckWatched["A"]
 	p.healthCheckWatchedMu.RUnlock()
 	if !watched {
-		t.Fatal("expected retryable request failure to register endpoint for health check")
+		t.Fatal("expected failed-over endpoint A to be registered for health check")
 	}
 
 	p.runHealthCheckRound()
@@ -200,7 +258,7 @@ func TestRetryableRequestFailureIsHealthCheckedAndCleared(t *testing.T) {
 	}
 }
 
-func TestUnifiedModelHotStandbyKeepsEnabledEndpointsWatched(t *testing.T) {
+func TestUnifiedModelHotStandbyDoesNotPreWatchEnabledEndpoints(t *testing.T) {
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()
 
@@ -218,14 +276,13 @@ func TestUnifiedModelHotStandbyKeepsEnabledEndpointsWatched(t *testing.T) {
 	})
 
 	p.seedHealthCheckWatchSet()
-	p.runHealthCheckRound()
 
 	p.healthCheckWatchedMu.RLock()
 	_, watchedA := p.healthCheckWatched["A"]
 	_, watchedB := p.healthCheckWatched["B"]
 	p.healthCheckWatchedMu.RUnlock()
-	if !watchedA || !watchedB {
-		t.Fatalf("expected hot standby to keep all enabled endpoints watched, got A=%t B=%t", watchedA, watchedB)
+	if watchedA || watchedB {
+		t.Fatalf("expected unified model hot standby not to pre-watch healthy endpoints, got A=%t B=%t", watchedA, watchedB)
 	}
 }
 
@@ -250,7 +307,34 @@ func TestHealthCheckRecoveryAutoSwitchesOnlyWhenAutoReturn(t *testing.T) {
 	}
 }
 
-func TestManualSwitchToLowerPriorityEndpointWatchesPreferredAutoReturnEndpoint(t *testing.T) {
+func TestSeedHealthCheckDoesNotWatchPreferredEndpointWithoutRecordedFailure(t *testing.T) {
+	recovered := newHealthyResponsesStreamServer(t)
+	defer recovered.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", recovered.URL),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}, recovered.Client())
+	p.config.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+
+	if err := p.SetCurrentEndpoint("B"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+	p.healthCheckWatchedMu.Lock()
+	p.healthCheckWatched = make(map[string]struct{})
+	p.healthCheckWatchedMu.Unlock()
+
+	p.seedHealthCheckWatchSet()
+
+	p.healthCheckWatchedMu.RLock()
+	_, watched := p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watched {
+		t.Fatal("expected seed without recorded failure not to watch preferred endpoint A")
+	}
+}
+
+func TestManualSwitchToLowerPriorityEndpointDoesNotWatchPreferredEndpoint(t *testing.T) {
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()
 
@@ -266,17 +350,151 @@ func TestManualSwitchToLowerPriorityEndpointWatchesPreferredAutoReturnEndpoint(t
 	p.healthCheckWatchedMu.RLock()
 	_, watched := p.healthCheckWatched["A"]
 	p.healthCheckWatchedMu.RUnlock()
-	if !watched {
-		t.Fatal("expected preferred endpoint A to be watched after switching to lower-priority B")
-	}
-
-	p.runHealthCheckRound()
-	if got := p.GetCurrentEndpointName(); got != "A" {
-		t.Fatalf("expected auto_return health check to switch current endpoint back to A, got %q", got)
+	if watched {
+		t.Fatal("expected manual switch to lower-priority B not to watch preferred endpoint A")
 	}
 }
 
-func TestHealthCheckDoesNotClearActiveQuotaCooldown(t *testing.T) {
+func TestFailureSwitchToBackupWatchesFailedPreferredEndpoint(t *testing.T) {
+	recovered := newHealthyResponsesStreamServer(t)
+	defer recovered.Close()
+
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", recovered.URL),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	}, recovered.Client())
+	p.config.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+
+	cooled := p.markEndpointCooldownForReason("A", "transient_network_error", nil, requestObservability{RequestID: "failed-default"}, 1)
+	if !cooled {
+		t.Fatal("expected transient network failure to create endpoint cooldown")
+	}
+	p.healthCheckWatchedMu.RLock()
+	_, watchedBeforeSwitch := p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watchedBeforeSwitch {
+		t.Fatal("expected cooldown without fallback not to watch endpoint A")
+	}
+
+	p.switchCurrentEndpointAfterFailure(failoverPolicyTestEndpoint("A", recovered.URL), "transient_network_error", requestObservability{RequestID: "failed-default"}, 1)
+
+	if got := p.GetCurrentEndpointName(); got != "B" {
+		t.Fatalf("expected failure switch to backup endpoint B, got %q", got)
+	}
+	p.healthCheckWatchedMu.RLock()
+	_, watchedA := p.healthCheckWatched["A"]
+	_, watchedB := p.healthCheckWatched["B"]
+	p.healthCheckWatchedMu.RUnlock()
+	if !watchedA || watchedB {
+		t.Fatalf("expected only failed preferred endpoint A to be watched, got A=%t B=%t", watchedA, watchedB)
+	}
+}
+
+func TestFailureSwitchFromNonPreferredEndpointDoesNotWatchFailedEndpoint(t *testing.T) {
+	p := newFailoverPolicyTestProxy([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+		failoverPolicyTestEndpoint("C", "https://c.example"),
+	}, nil)
+	p.config.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+	if err := p.SetCurrentEndpoint("B"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
+
+	p.markEndpointCooldownForReason("B", "upstream_5xx", nil, requestObservability{RequestID: "failed-non-preferred"}, 1)
+	p.switchCurrentEndpointAfterFailure(failoverPolicyTestEndpoint("B", "https://b.example"), "upstream_5xx", requestObservability{RequestID: "failed-non-preferred"}, 1)
+
+	if got := p.GetCurrentEndpointName(); got != "C" {
+		t.Fatalf("expected failure switch from B to C, got %q", got)
+	}
+	p.healthCheckWatchedMu.RLock()
+	_, watchedA := p.healthCheckWatched["A"]
+	_, watchedB := p.healthCheckWatched["B"]
+	_, watchedC := p.healthCheckWatched["C"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watchedA || watchedB || watchedC {
+		t.Fatalf("expected non-preferred failure not to start background health checks, got A=%t B=%t C=%t", watchedA, watchedB, watchedC)
+	}
+}
+
+func TestSeedHealthCheckIgnoresNonPreferredEndpointFailure(t *testing.T) {
+	store, err := storage.NewSQLiteStorage(filepath.Join(t.TempDir(), "ccnexus.db"))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	defer store.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+	cfg.UpdateEndpoints([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	})
+	p := New(cfg, &noopStatsStorage{}, store, "test-device")
+
+	failureAt := time.Now().UTC()
+	reason := "upstream_5xx"
+	if _, err := store.UpsertEndpointRuntimeStatus("B", storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:     &failureAt,
+		LastFailureReason: &reason,
+	}); err != nil {
+		t.Fatalf("seed runtime status: %v", err)
+	}
+
+	p.seedHealthCheckWatchSet()
+
+	p.healthCheckWatchedMu.RLock()
+	_, watchedA := p.healthCheckWatched["A"]
+	_, watchedB := p.healthCheckWatched["B"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watchedA || watchedB {
+		t.Fatalf("expected only preferred endpoint recovery to be watched, got A=%t B=%t", watchedA, watchedB)
+	}
+}
+
+func TestSeedHealthCheckSwitchesAwayFromPreferredTransientFailure(t *testing.T) {
+	store, err := storage.NewSQLiteStorage(filepath.Join(t.TempDir(), "ccnexus.db"))
+	if err != nil {
+		t.Fatalf("create storage: %v", err)
+	}
+	defer store.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.UpdateFailover(&config.FailoverConfig{RecoveredEndpointPolicy: config.RecoveredEndpointPolicyAutoReturn})
+	cfg.UpdateEndpoints([]config.Endpoint{
+		failoverPolicyTestEndpoint("A", "https://a.example"),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
+	})
+	p := New(cfg, &noopStatsStorage{}, store, "test-device")
+
+	failureAt := time.Now().UTC()
+	reason := "upstream_5xx"
+	if _, err := store.UpsertEndpointRuntimeStatus("A", storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:     &failureAt,
+		LastFailureReason: &reason,
+	}); err != nil {
+		t.Fatalf("seed runtime status: %v", err)
+	}
+
+	p.seedHealthCheckWatchSet()
+
+	if got := p.GetCurrentEndpointName(); got != "B" {
+		t.Fatalf("expected startup seed to switch away from failed preferred endpoint A, got %q", got)
+	}
+	if cooldown, ok := p.endpointCooldown("A"); !ok || !cooldown.Until.After(time.Now()) || cooldown.Reason != "upstream_5xx" {
+		t.Fatalf("expected preferred endpoint transient cooldown to be restored, got cooldown=%#v ok=%t", cooldown, ok)
+	}
+	p.healthCheckWatchedMu.RLock()
+	_, watchedA := p.healthCheckWatched["A"]
+	_, watchedB := p.healthCheckWatched["B"]
+	p.healthCheckWatchedMu.RUnlock()
+	if !watchedA || watchedB {
+		t.Fatalf("expected only preferred endpoint A to be watched after startup failover, got A=%t B=%t", watchedA, watchedB)
+	}
+}
+
+func TestQuotaCooldownDoesNotEnterHealthCheckWatchSet(t *testing.T) {
+	hits := 0
 	recovered := newHealthyResponsesStreamServer(t)
 	defer recovered.Close()
 
@@ -291,10 +509,23 @@ func TestHealthCheckDoesNotClearActiveQuotaCooldown(t *testing.T) {
 
 	p.markEndpointCooldown("A", "quota_exhausted", time.Hour, requestObservability{RequestID: "quota-cooldown"}, 1)
 	p.registerForHealthCheck("A")
+	p.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		hits++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})}
 	p.runHealthCheckRound()
 
 	if got := p.GetCurrentEndpointName(); got != "B" {
 		t.Fatalf("expected active quota cooldown to keep current endpoint B, got %q", got)
+	}
+	if hits != 0 {
+		t.Fatalf("expected quota-cooled endpoint not to be health-probed automatically, got hits=%d", hits)
 	}
 	cooldown, ok := p.endpointCooldown("A")
 	if !ok || !cooldown.Until.After(time.Now()) || cooldown.Reason != "quota_exhausted" {
@@ -303,8 +534,8 @@ func TestHealthCheckDoesNotClearActiveQuotaCooldown(t *testing.T) {
 	p.healthCheckWatchedMu.RLock()
 	_, watched := p.healthCheckWatched["A"]
 	p.healthCheckWatchedMu.RUnlock()
-	if !watched {
-		t.Fatal("expected quota-cooled endpoint to stay watched for later recovery")
+	if watched {
+		t.Fatal("expected quota-cooled endpoint not to enter health check watch set")
 	}
 }
 
@@ -482,8 +713,10 @@ func TestExpiredQuotaBlockIsNotClearedByHealthProbeSuccess(t *testing.T) {
 	}
 }
 
-func TestExpiredQuotaProbeFailureRenewsCooldown(t *testing.T) {
+func TestExpiredQuotaBlockDoesNotStartHealthProbe(t *testing.T) {
+	hits := 0
 	quotaUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"error":{"code":"insufficient_user_quota","message":"quota exhausted"}}`))
@@ -518,15 +751,20 @@ func TestExpiredQuotaProbeFailureRenewsCooldown(t *testing.T) {
 	p.runHealthCheckRound()
 
 	if got := p.GetCurrentEndpointName(); got != "B" {
-		t.Fatalf("expected failed quota probe to keep current endpoint B, got %q", got)
+		t.Fatalf("expected quota block to keep current endpoint B, got %q", got)
 	}
-	cooldown, ok := p.endpointCooldown("A")
-	if !ok || !cooldown.Until.After(time.Now()) || cooldown.Reason != "quota_exhausted" {
-		t.Fatalf("expected failed quota probe to renew quota cooldown, got cooldown=%#v ok=%t", cooldown, ok)
+	if hits != 0 {
+		t.Fatalf("expected quota hard block not to be health-probed automatically, got %d hits", hits)
+	}
+	p.healthCheckWatchedMu.RLock()
+	_, watched := p.healthCheckWatched["A"]
+	p.healthCheckWatchedMu.RUnlock()
+	if watched {
+		t.Fatal("expected quota hard block not to enter health check watch set")
 	}
 	blocked := p.snapshotRuntimeBlockedEndpoints()
 	if blocked["A"] != "quota_exhausted" {
-		t.Fatalf("expected failed quota probe to keep runtime block, got %#v", blocked)
+		t.Fatalf("expected quota hard block to remain, got %#v", blocked)
 	}
 }
 
@@ -559,7 +797,9 @@ func TestHealthCheckDefersActiveUpstreamCooldown(t *testing.T) {
 }
 
 func TestQuotaBlockedHealthProbeKeepsBlockOnDifferentFailure(t *testing.T) {
+	hits := 0
 	unavailableUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"error":{"code":"model_not_found","message":"No available channel for model claude-opus-4-7 under group 1052 (request id: 202605130302429)"}}`))
@@ -593,6 +833,9 @@ func TestQuotaBlockedHealthProbeKeepsBlockOnDifferentFailure(t *testing.T) {
 	p.seedHealthCheckWatchSet()
 	p.runHealthCheckRound()
 
+	if hits != 0 {
+		t.Fatalf("expected quota hard block not to be health-probed automatically, got %d hits", hits)
+	}
 	blocked := p.snapshotRuntimeBlockedEndpoints()
 	if blocked["A"] != "quota_exhausted" {
 		t.Fatalf("expected non-success health probe to preserve quota runtime block, got %#v", blocked)
@@ -602,8 +845,8 @@ func TestQuotaBlockedHealthProbeKeepsBlockOnDifferentFailure(t *testing.T) {
 		t.Fatalf("get runtime statuses: %v", err)
 	}
 	status := statuses["A"]
-	if status == nil || status.LastFailureReason != "quota_exhausted" || status.LastFailureStatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected persisted quota block with latest status, got %#v", status)
+	if status == nil || status.LastFailureReason != "quota_exhausted" || status.LastFailureStatusCode != 0 {
+		t.Fatalf("expected persisted quota block to remain unchanged without auto probe, got %#v", status)
 	}
 }
 
@@ -678,9 +921,13 @@ func TestHealthCheckRecoveryPersistsRuntimeSuccess(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.UpdateEndpoints([]config.Endpoint{
 		failoverPolicyTestEndpoint("A", recovered.URL),
+		failoverPolicyTestEndpoint("B", "https://b.example"),
 	})
 	p := New(cfg, &noopStatsStorage{}, store, "test-device")
 	p.httpClient = recovered.Client()
+	if err := p.SetCurrentEndpoint("B"); err != nil {
+		t.Fatalf("set current endpoint: %v", err)
+	}
 
 	failureAt := time.Now().Add(-time.Minute).UTC()
 	reason := "upstream_stream_error"

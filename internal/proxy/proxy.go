@@ -367,6 +367,9 @@ func (p *Proxy) switchCurrentEndpointAfterFailure(failedEndpoint config.Endpoint
 
 	cleanReason := sanitizeLogField(reason)
 	p.persistCurrentEndpoint(nextEndpoint.Name)
+	if !shouldBlockHealthCheckRecoveryReason(cleanReason) {
+		p.registerForHealthCheck(failedName)
+	}
 	logger.Info("[AUTO SWITCH] %s → %s (#%d) %s switch_reason=%s",
 		currentEndpoint.Name,
 		nextEndpoint.Name,
@@ -409,7 +412,6 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 				p.mu.Unlock()
 				p.clearEndpointCooldown(ep.Name)
 				p.clearRuntimeBlockedEndpoint(ep.Name)
-				p.watchPreferredEndpointsForAutoReturn(ep.Name)
 				return nil
 			}
 			p.currentIndex = i
@@ -418,7 +420,6 @@ func (p *Proxy) SetCurrentEndpoint(targetName string) error {
 			p.persistCurrentEndpoint(ep.Name)
 			p.clearEndpointCooldown(ep.Name)
 			p.clearRuntimeBlockedEndpoint(ep.Name)
-			p.watchPreferredEndpointsForAutoReturn(ep.Name)
 			p.emitCurrentEndpointChanged(oldEndpoint.Name, ep.Name, "manual_switch")
 			return nil
 		}
@@ -591,7 +592,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 			candidate, ok := candidateMap[specifiedEndpoint.Name]
 			if !ok {
 				if enforceModelRouting {
-					p.enqueueModelVerification(clientModelForRouting, []config.Endpoint{*specifiedEndpoint})
+					p.enqueueModelVerification(clientModelForRouting, p.autoModelVerificationEndpoints([]config.Endpoint{*specifiedEndpoint}))
 					writeModelNotVerifiedError(w, clientModelForRouting)
 					return
 				}
@@ -602,7 +603,7 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		} else {
 			if len(filtered) == 0 {
 				if enforceModelRouting {
-					p.enqueueModelVerification(clientModelForRouting, endpoints)
+					p.enqueueModelVerification(clientModelForRouting, p.autoModelVerificationEndpoints(endpoints))
 					writeModelNotVerifiedError(w, clientModelForRouting)
 					return
 				}
@@ -621,12 +622,12 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestEndpoints := endpoints
+	routingPreference := routingPreferenceNone
 	if !useSpecificEndpoint {
 		requestEndpoints = p.getRequestPlanEndpoints(endpoints, obs)
 		if unifiedModelActive {
 			requestEndpoints = p.filterProtocolCooledEndpoints(requestEndpoints, clientFormat, obs)
 		}
-		routingPreference := routingPreferenceNone
 		if !modelRoutingActive && !unifiedModelActive {
 			routingPreference = p.routingPreferenceForRequest(clientFormat, streamReq.Model)
 		}
@@ -635,6 +636,9 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	requestPlan := newRequestEndpointPlan(requestEndpoints, 0)
+	if !useSpecificEndpoint {
+		requestPlan = p.newRequestEndpointPlanForRequest(requestEndpoints, routingPreference)
+	}
 	maxRetries := p.computeMaxRetries(requestEndpoints)
 	semanticEmptyMaxRetries := len(requestEndpoints) * semanticEmptyFailoverAttempts
 	if useSpecificEndpoint {
@@ -653,10 +657,15 @@ func (p *Proxy) handleProxy(w http.ResponseWriter, r *http.Request) {
 	advanceForFailure := func(current config.Endpoint, reason string, attemptNumber int, headers http.Header) {
 		cooled := p.markEndpointCooldownForReason(current.Name, reason, headers, obs, attemptNumber)
 		if !useSpecificEndpoint {
-			if cooled {
+			if shouldBlockHealthCheckRecoveryReason(reason) {
 				p.maybeSwitchCurrentEndpointAfterCooldown(current, reason, obs, attemptNumber)
+				p.removeRequestEndpoint(requestPlan, current, obs, attemptNumber, reason)
+			} else if cooled {
+				p.maybeSwitchCurrentEndpointAfterCooldown(current, reason, obs, attemptNumber)
+				p.advanceRequestEndpoint(requestPlan, current, obs, attemptNumber, reason)
+			} else {
+				p.advanceRequestEndpoint(requestPlan, current, obs, attemptNumber, reason)
 			}
-			p.advanceRequestEndpoint(requestPlan, current, obs, attemptNumber, reason)
 		}
 		endpointAttempts = 0
 	}

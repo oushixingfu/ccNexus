@@ -47,8 +47,8 @@ export function endpointAvailability(endpoint) {
         };
     }
 
-    const availability = endpoint.availability || (endpoint.available === false ? 'unavailable' : 'available');
-    if (availability === 'unavailable' || endpoint.available === false) {
+    const availability = endpoint.availability || (endpoint.available === false ? 'unknown' : 'available');
+    if (availability === 'unavailable') {
         const reason = formatAvailabilityReason(endpoint.availabilityReason);
         return {
             available: false,
@@ -58,6 +58,18 @@ export function endpointAvailability(endpoint) {
             label: t('endpoints.unavailable'),
             title: endpointAvailabilityTitle(endpoint),
             reason
+        };
+    }
+
+    if (availability === 'unknown' || endpoint.available !== true) {
+        return {
+            available: false,
+            availability: 'unknown',
+            badgeClass: 'badge-warning',
+            indicatorClass: 'unknown',
+            label: t('endpoints.notTested'),
+            title: t('endpoints.notTested'),
+            reason: ''
         };
     }
 

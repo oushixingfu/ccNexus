@@ -297,11 +297,7 @@ func TestRoutingStrategyStartsAtPreferredEndpointWhenCurrentDoesNotMatch(t *test
 	available := p.getRequestPlanEndpoints(endpoints, requestObservability{RequestID: "routing-current"})
 	preference := p.routingPreferenceForRequest(ClientFormatOpenAIResponses, "gpt-5.5")
 	routed := p.applyRoutingStrategyToRequestPlan(available, preference)
-	currentName := p.GetCurrentEndpointName()
-	if currentEndpoint, ok := findEndpointByName(routed, currentName); !ok || !endpointMatchesRoutingPreference(currentEndpoint, preference) {
-		currentName = ""
-	}
-	plan := newRequestEndpointPlanForCurrentWithSkip(routed, routed, currentName, p.isEndpointDeprioritized(currentName))
+	plan := p.newRequestEndpointPlanForRequest(routed, preference)
 
 	if got := plan.Current().Name; got != "codex" {
 		t.Fatalf("expected request plan to start at codex, got %q", got)

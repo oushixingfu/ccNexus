@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lich0821/ccNexus/internal/config"
+	proxypkg "github.com/lich0821/ccNexus/internal/proxy"
 	"github.com/lich0821/ccNexus/internal/storage"
 )
 
@@ -58,6 +60,48 @@ func TestSendTestRequestFallsBackFromResponsesToChat(t *testing.T) {
 	}
 	if responsesCalls != 1 || chatCalls != 1 {
 		t.Fatalf("expected one responses call and one chat call, got responses=%d chat=%d", responsesCalls, chatCalls)
+	}
+}
+
+func TestEndpointTestFailureReasonUsesRequestPlanReasons(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "quota http failure",
+			err:  &endpointTestHTTPError{statusCode: http.StatusTooManyRequests, body: `{"error":{"message":"quota exhausted"}}`},
+			want: "quota_exhausted",
+		},
+		{
+			name: "unauthorized http failure",
+			err:  &endpointTestHTTPError{statusCode: http.StatusUnauthorized, body: `{"error":{"message":"invalid api key"}}`},
+			want: "endpoint_auth_failed",
+		},
+		{
+			name: "response read failure",
+			err:  errors.New("failed to read response: unexpected EOF"),
+			want: "upstream_stream_error",
+		},
+		{
+			name: "unknown validation failure",
+			err:  errors.New("unexpected endpoint test failure"),
+			want: "send_request_failed",
+		},
+		{
+			name: "nil failure",
+			err:  nil,
+			want: "send_request_failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := endpointTestFailureReason(tt.err); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
 	}
 }
 
@@ -155,6 +199,85 @@ func TestEndpointTestRecordsSuccessAndClearsStaleFailure(t *testing.T) {
 	}
 	if listed["available"] != true || listed["availability"] != "available" {
 		t.Fatalf("expected listed endpoint available, got %#v", listed)
+	}
+}
+
+func TestEndpointTestFailureUsesProxyFailoverState(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota exhausted"}}`))
+	}))
+	defer upstream.Close()
+
+	store := newEndpointAPITestStorage(t)
+	defer store.Close()
+
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:               "Primary",
+		APIUrl:             upstream.URL,
+		APIKey:             "sk-test",
+		AuthMode:           config.AuthModeAPIKey,
+		Enabled:            true,
+		Transformer:        "openai",
+		Model:              "gpt-5.5",
+		AutoSelect:         true,
+		SupportsOpenAIChat: true,
+		SortOrder:          0,
+	}); err != nil {
+		t.Fatalf("save primary endpoint: %v", err)
+	}
+	if err := store.SaveEndpoint(&storage.Endpoint{
+		Name:               "Fallback",
+		APIUrl:             "https://fallback.example.com",
+		APIKey:             "sk-test",
+		AuthMode:           config.AuthModeAPIKey,
+		Enabled:            true,
+		Transformer:        "openai",
+		Model:              "gpt-5.5",
+		AutoSelect:         true,
+		SupportsOpenAIChat: true,
+		SortOrder:          1,
+	}); err != nil {
+		t.Fatalf("save fallback endpoint: %v", err)
+	}
+
+	cfg, err := config.LoadFromStorage(storage.NewConfigStorageAdapter(store))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.BasicAuthEnabled = false
+	p := proxypkg.New(cfg, noopStatsStorage{}, store, "test-device")
+	handler := NewHandler(cfg, p, store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/endpoints/Primary/test", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	var testResult map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if testResult["success"] != false {
+		t.Fatalf("expected failed test response, got %#v", testResult)
+	}
+	if current := p.GetCurrentEndpointName(); current != "Fallback" {
+		t.Fatalf("expected proxy current endpoint to fail over to Fallback, got %q", current)
+	}
+
+	statuses, err := store.GetEndpointRuntimeStatuses()
+	if err != nil {
+		t.Fatalf("get runtime statuses: %v", err)
+	}
+	status := statuses["Primary"]
+	if status == nil || status.LastFailureReason != "quota_exhausted" || status.LastFailureStatusCode != http.StatusTooManyRequests || status.LastAttemptAt == nil {
+		t.Fatalf("expected classified persisted runtime failure, got %#v", status)
 	}
 }
 

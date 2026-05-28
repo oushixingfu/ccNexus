@@ -129,3 +129,21 @@ func TestEnqueueModelVerificationSkipsFailedModelBeforeNextAttempt(t *testing.T)
 		t.Fatalf("expected next attempt to be preserved, got %#v", model.NextAttemptAt)
 	}
 }
+
+func TestAutoModelVerificationEndpointsOnlyIncludesPrimaryEndpoint(t *testing.T) {
+	primary := config.Endpoint{Name: "Primary", APIUrl: "https://primary.example.com", Enabled: true}
+	fallback := config.Endpoint{Name: "Fallback", APIUrl: "https://fallback.example.com", Enabled: true}
+	cfg := config.DefaultConfig()
+	cfg.UpdateEndpoints([]config.Endpoint{primary, fallback})
+	p := &Proxy{config: cfg}
+
+	selected := p.autoModelVerificationEndpoints([]config.Endpoint{fallback, primary})
+	if len(selected) != 1 || selected[0].Name != "Primary" {
+		t.Fatalf("expected only primary endpoint to be auto-verified, got %#v", selected)
+	}
+
+	selected = p.autoModelVerificationEndpoints([]config.Endpoint{fallback})
+	if len(selected) != 0 {
+		t.Fatalf("expected fallback-only candidate list not to auto-verify, got %#v", selected)
+	}
+}

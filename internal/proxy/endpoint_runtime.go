@@ -187,11 +187,7 @@ func (p *Proxy) recordEndpointFailure(endpointName, reason string, statusCodes .
 }
 
 func (p *Proxy) recordRetryableRequestFailure(endpointName, reason string, statusCodes ...int) *storage.EndpointRuntimeStatus {
-	status := p.recordEndpointFailure(endpointName, reason, statusCodes...)
-	if shouldDeferHealthCheckForCooldownReason(reason) {
-		p.registerForHealthCheck(endpointName)
-	}
-	return status
+	return p.recordEndpointFailure(endpointName, reason, statusCodes...)
 }
 
 func (p *Proxy) recordEndpointError(endpointName, reason string, statusCodes ...int) {
@@ -222,6 +218,53 @@ func (p *Proxy) MarkEndpointAvailable(endpointName string) {
 	}
 	p.clearEndpointCooldown(endpointName)
 	p.recordEndpointSuccessEvent(endpointName)
+}
+
+// MarkEndpointUnavailable records a failed external validation for an endpoint
+// and applies the same in-memory request-planning state used by proxy failures.
+func (p *Proxy) MarkEndpointUnavailable(endpointName string, reason string, statusCode int) {
+	if p == nil || strings.TrimSpace(endpointName) == "" {
+		return
+	}
+
+	now := time.Now().UTC()
+	cleanReason := sanitizeLogField(reason)
+	if shouldBlockHealthCheckRecoveryReason(cleanReason) {
+		p.setRuntimeBlockedEndpoint(endpointName, cleanReason)
+	} else {
+		p.clearRuntimeBlockedEndpoint(endpointName)
+	}
+	status := p.upsertEndpointRuntimeStatus(endpointName, storage.EndpointRuntimeStatusPatch{
+		LastFailureAt:         &now,
+		LastFailureReason:     &cleanReason,
+		LastFailureStatusCode: &statusCode,
+		LastAttemptAt:         &now,
+	})
+	if status == nil {
+		status = &storage.EndpointRuntimeStatus{
+			EndpointName:          endpointName,
+			LastFailureAt:         &now,
+			LastFailureReason:     cleanReason,
+			LastFailureStatusCode: statusCode,
+			LastAttemptAt:         &now,
+			UpdatedAt:             now,
+		}
+	}
+	p.emitEndpointRuntimeEvent(endpointName, "failure", status)
+
+	endpoint := p.findEnabledEndpoint(endpointName)
+	if endpoint == nil {
+		return
+	}
+
+	obs := requestObservability{RequestID: "endpoint_test"}
+	cooled := p.markEndpointCooldownForReason(endpointName, cleanReason, nil, obs, 0)
+	if cooled || shouldBlockHealthCheckRecoveryReason(cleanReason) {
+		p.maybeSwitchCurrentEndpointAfterCooldown(*endpoint, cleanReason, obs, 0)
+		if !shouldBlockHealthCheckRecoveryReason(cleanReason) {
+			p.registerForHealthCheck(endpointName)
+		}
+	}
 }
 
 func (p *Proxy) emitCurrentEndpointChanged(previousName, name, reason string) {

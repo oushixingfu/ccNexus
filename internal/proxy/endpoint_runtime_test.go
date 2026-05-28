@@ -11,7 +11,10 @@ func TestMarkEndpointAvailableClearsCooldownAndRuntimeBlock(t *testing.T) {
 		runtimeBlockedEndpoints: make(map[string]string),
 	}
 	p.setEndpointCooldownUntil("Primary", "upstream_5xx", time.Now().Add(time.Hour))
-	p.setRuntimeBlockedEndpoint("Primary", retryReasonSemanticEmptyResponse)
+	p.setRuntimeBlockedEndpoint("Primary", "quota_exhausted")
+	if reason := p.runtimeBlockedReason("Primary"); reason != "quota_exhausted" {
+		t.Fatalf("expected runtime block to be seeded before availability mark, got %q", reason)
+	}
 
 	p.MarkEndpointAvailable("Primary")
 
